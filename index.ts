@@ -18,6 +18,7 @@ import { defaultStoreDir, resolveConfig } from "./lib/config.ts";
 import { MemoryStore } from "./lib/store.ts";
 import { MemoryService, storeErrorText, type RunInfo } from "./lib/service.ts";
 import { registerMemoryTools } from "./lib/tools.ts";
+import { EXTENSION_VERSION } from "./lib/version.ts";
 import { handleMemoryCommand, type CommandDeps } from "./lib/commands.ts";
 import { buildCatalogSection, buildHitsSection, CATALOG_SECTION, HITS_SECTION } from "./lib/prompt.ts";
 import { renderCatalog } from "./lib/search.ts";
@@ -25,7 +26,7 @@ import { RunLedger, candidateToDraft } from "./lib/capture.ts";
 import { classifyCall } from "./lib/heal.ts";
 import { displayPath, parseJsonSafe, writeFileAtomic } from "./lib/util.ts";
 
-export const VERSION = "0.1.0";
+const VERSION = EXTENSION_VERSION;
 
 interface SessionState {
 	info: RunInfo;
