@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.3.0 - 2026-10-22
+
+
+One new command, the command layer put under test, dead code removed, and the write
+path made cheaper without changing what it writes.
+
+
+### Added
+
+
+- **`/memory inspect <file> [passphrase=]`** - read a container's metadata (record
+  count, export time, note, encryption and authentication status) without importing
+  anything. Inspect a container you did not make before you import it.
+- **`test/commands.test.ts`** - drives the command layer with a fake pi context. It now
+  proves, end to end, the properties the documentation claimed: `delete-all` stages a
+  token, deletes nothing until the token is presented, writes exactly one backup
+  container first, and that backup restores; long listings go to a file instead of the
+  terminal; a rejected config value names the accepted values.
+- **`test/hygiene.test.ts`** - with no compiler in the pipeline: no unused imports,
+  no exported symbol nothing references, every relative import resolves, and no shipped
+  file reaches into `test/`, `scripts/`, or `docs/`.
+- `/memory status` reports which pi release the build was verified against.
+
+
+### Fixed
+
+
+- `/memory inspect` referenced an options object that did not exist in that scope; the
+  new command test caught it.
+- Two container tamper tests were flaky because they assumed the digest lives in the
+  body (it lives in the header) and because some base64 bit flips are not observable.
+  Replaced with: change a hex digit of `payloadSha256` and require the tamper verdict;
+  flip a payload byte and require that nothing imports silently.
+- The payload digest is compared with `timingSafeEqual` behind a length guard instead
+  of `!==` on hex strings.
+
+
+### Changed
+
+
+- **Removed exports nothing called** (`citedCommands`, `healNote`, `matchesCited`,
+  `findContradicted`, `recordText`, `isRetired`, `configAsPlainObject`, `envVarNames`,
+  `specKeys`, `storeRootToken`, `jsonSafe`, `CONFIDENCE`, `CONFIG_KEYS`,
+  `captureNoteFor`, `DEFAULTS_REF`, `draftForTest`) plus unused imports. Dead exports
+  become a second, undocumented API surface.
+- `node:crypto` is confined to the container codec and the token helper, and `node:zlib`
+  to the container codec, enforced in the offline test.
+- README states what each install source puts on disk: npm takes the published tarball
+  (no tests or scripts), git clones the repository (development folders present but
+  never imported), a local path is loaded in place.
+
+
+### Performance
+
+
+- Writes no longer re-parse the whole store. Every write path used to call a forced
+  reload to rebuild `index.json` and `INDEX.md`; the read cache is now updated in place
+  and the indexes render from it. Measured on this machine: ~71 ms to ~43 ms per write
+  at 200 records, against ~6 ms for the file write itself. A new test asserts the
+  incremental indexes are byte-identical to a full rescan, including after a retire
+  moves a file between `records/` and `archive/`.
+- `tokenSimilarity` memoises token sets (bounded), which the duplicate scan was
+  recomputing for the whole store on every write.
+
 ## 0.2.0 - 2026-10-22
 
 Record management, a secure container format, user-facing configuration, and
