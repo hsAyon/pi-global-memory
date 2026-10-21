@@ -23,20 +23,32 @@ Status: `0.1.0`, verified against pi **1.3.0** (`npm run check` loads it through
 
 ## Install
 
-From the folder you cloned this repository into (replace the path with your own):
+
+Three ways, with different answers to "what lands on disk":
 
 
 ```bash
-pi install /path/to/pi-global-memory            # writes a declaration to your pi settings
-pi install /path/to/pi-global-memory --local    # project-scoped: .pi/settings.json (loaded after project trust)
+# 1. from npm: pi fetches the published tarball, which is exactly index.ts, lib/,
+#    README.md, SECURITY.md, CHANGELOG.md, LICENSE, package.json - no tests, no scripts
+pi install npm:pi-global-memory
+
+
+# 2. from git: pi clones the repository, so the development folders are present on disk,
+#    but nothing in the shipped code imports them (pinned by test)
+pi install git:github.com/hsAyon/pi-global-memory@v0.2.1
+
+
+# 3. from a checkout: loaded in place, nothing is copied
+pi install /path/to/pi-global-memory
+pi install /path/to/pi-global-memory --local   # project-scoped: .pi/settings.json, loaded after project trust
 ```
 
 
-Or point pi at it for one run:
+For a single run without installing:
 
 
 ```bash
-pi --extension ./index.ts
+pi -e /path/to/pi-global-memory        # or: pi --extension ./index.ts
 ```
 
 
@@ -51,10 +63,10 @@ Or add it to your pi settings yourself:
 ```
 
 
-Pi supplies the host packages this extension imports (`@earendil-works/pi-coding-agent`,
-`typebox`): they are declared as `peerDependencies`, must not be bundled, and inside pi
-they are resolved by pi's own module aliases - so using the package needs no install step.
-Only `npm install` (typebox as a devDependency) is needed to run the tests standalone.
+Pi provides the packages this extension imports (`@earendil-works/pi-coding-agent`, `typebox`) -
+they are `peerDependencies`, must not be bundled, and inside pi they resolve through pi's own
+module mapping, so using the package needs no install step. `npm install` locally (typebox as a
+devDependency) is only needed to run the tests standalone.
 
 Then start pi and run:
 
@@ -104,6 +116,7 @@ Closed vocabularies are TypeBox literal unions, so pi rejects a hallucinated act
 /memory delete <id>... force   one record, permanently
 /memory delete-all             EVERY record: two confirmations + a typed token, always backed up
 /memory review | accept [n] | prune | doctor | selftest | reindex
+/memory inspect <file> [passphrase=]  what a container holds, is it authenticated - without importing anything
 /memory export [file] [all] [category=<slug>] [enc] [note=<text>] [allowprivate]
 /memory import <file> [passphrase=<text>]
 /memory config list | explain <key> | get <key> | set <key> <value> | where
@@ -225,6 +238,10 @@ GMEM1
 
 Passphrases: `PI_GLOBAL_MEMORY_PASSPHRASE` is read first. Passing `passphrase=…` works but warns,
 because command arguments end up in the pi session transcript.
+
+Before importing a file you did not make, look at it: `/memory inspect <file>` prints the record
+count, export time, note, and whether it is encrypted and authenticated. It imports nothing, and a
+damaged or hostile file is reported rather than half-read.
 
 
 ## Versioning: the extension's, and the records'
