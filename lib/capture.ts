@@ -13,7 +13,7 @@
 
 import type { GmEvidence, Signal } from "./types.ts";
 import type { Draft } from "./record.ts";
-import { hash32, normWs, nowIso, slugify, truncate } from "./util.ts";
+import { hash32, normWs, slugify, truncate } from "./util.ts";
 import { hardenForInjection } from "./sanitize.ts";
 
 /** Tools whose failures are worth remembering. Everything else is noise. */
@@ -325,8 +325,4 @@ export function mineBranch(branch: unknown[], sessionId: string, maxCandidates =
 	const ledger = new RunLedger({ maxCandidates, sessionId });
 	for (const o of observationsFromBranch(branch)) ledger.observe(o);
 	return { candidates: ledger.candidates(), signals: ledger.signals() };
-}
-
-export function captureNoteFor(count: number): string {
-	return `auto-capture ${count} record(s) at ${nowIso()}`;
 }

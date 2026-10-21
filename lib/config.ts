@@ -163,10 +163,6 @@ const ENV_MAP: [string, keyof GmConfig][] = [
 	["TOGGLE_SHORTCUT", "toggleShortcut"],
 ];
 
-export function envVarNames(): string[] {
-	return [`${ENV_PREFIX}DISABLE`, `${ENV_PREFIX}ENABLE`, ...ENV_MAP.map(([suffix]) => `${ENV_PREFIX}${suffix}`)];
-}
-
 export function resolveConfig(input: ResolveInput): ResolvedConfig {
 	const env = input.env ?? process.env;
 	const problems: string[] = [];
@@ -224,6 +220,3 @@ export function configKeys(): string[] {
 	return [...ALL_KEYS].sort();
 }
 
-export function configAsPlainObject(c: GmConfig): Record<string, unknown> {
-	return { ...c };
-}

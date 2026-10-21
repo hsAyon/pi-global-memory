@@ -378,10 +378,6 @@ export function undocumentedKeys(): string[] {
 	return Object.keys(CONFIG_DEFAULTS).filter((k) => !byKey.has(k));
 }
 
-export function specKeys(): string[] {
-	return CONFIG_SPEC.map((s) => s.key as string);
-}
-
 export function boolSpecKeys(): (keyof GmConfig)[] {
 	return CONFIG_SPEC.filter((s) => s.type === "bool").map((s) => s.key);
 }

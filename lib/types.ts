@@ -24,7 +24,6 @@ export const EVIDENCE_TYPES = ["command", "file", "url", "session", "artifact", 
 export type GmEvidenceType = (typeof EVIDENCE_TYPES)[number];
 
 /** Confidence ladder. Kept deliberately small so models can reason about it. */
-export const CONFIDENCE = { tentative: 1, supported: 2, verified: 3 } as const;
 
 /**
  * Evidence is what makes a record a fact instead of a guess.
@@ -224,7 +223,6 @@ export const CONFIG_DEFAULTS: GmConfig = {
 };
 
 /** Keys the user may set through settings.json, config.json, or env. */
-export const CONFIG_KEYS = Object.keys(CONFIG_DEFAULTS) as (keyof GmConfig)[];
 
 export interface LoadedStore {
 	records: GmRecord[];

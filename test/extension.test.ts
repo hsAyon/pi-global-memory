@@ -110,6 +110,7 @@ describe("extension wiring (index.ts)", () => {
 	test("registers exactly two tools, one command, and the CLI escape hatches", async () => {
 		const mock = makePi();
 		const mod = await import("../index.ts");
+const { globalMemoryExtension } = mod;
 		mod.default(mock.api);
 		assert.deepEqual([...mock.tools.keys()].sort(), ["memory_lookup", "memory_save"]);
 		assert.ok(mock.commands.has("memory"), "/memory command must be registered");

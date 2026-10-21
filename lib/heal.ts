@@ -17,47 +17,14 @@
 import type { GmConfig, GmRecord } from "./types.ts";
 import type { Signal } from "./types.ts";
 import { detectHedges, scanPrivacy } from "./trust.ts";
-import { displayPath, normWs, nowIso, truncate } from "./util.ts";
+import { normWs, nowIso, truncate } from "./util.ts";
 import { valueScore } from "./record.ts";
-
-/** Quoted spans plus cited commands: the things a record claims work or fail. */
-export function citedCommands(rec: GmRecord): string[] {
-	const out = new Set<string>();
-	for (const e of rec.evidence) {
-		if (e.type === "command" && e.ref.trim().length >= 3) out.add(normWs(e.ref).toLowerCase());
-	}
-	for (const text of [rec.how, rec.avoid, rec.statement, rec.notes]) {
-		if (!text) continue;
-		for (const m of text.matchAll(/["'`]([^"'`\n]{3,120})["'`]/g)) {
-			const v = normWs(m[1]).toLowerCase();
-			if (v.length >= 3) out.add(v);
-		}
-	}
-	for (const c of rec.cues) {
-		const v = normWs(c).toLowerCase();
-		if (v.length >= 4 && /\s/.test(v)) out.add(v);
-	}
-	return [...out];
-}
 
 /**
  * Does this live call match something the record asserts?
  * Exact normalized equality, or one contains the other with a length ratio that
  * keeps "npm test" from matching "npm test -- --coverage something".
  */
-export function matchesCited(rec: GmRecord, callText: string): { matched: string; how: "exact" | "contained" } | undefined {
-	const needle = normWs(callText).toLowerCase();
-	if (needle.length < 3) return undefined;
-	for (const cited of citedCommands(rec)) {
-		if (cited === needle) return { matched: cited, how: "exact" };
-		const longer = Math.max(cited.length, needle.length);
-		const shorter = Math.min(cited.length, needle.length);
-		if (shorter >= 8 && shorter / longer >= 0.6 && (cited.includes(needle) || needle.includes(cited))) {
-			return { matched: cited, how: "contained" };
-		}
-	}
-	return undefined;
-}
 
 export type CallOutcome = "success" | "error";
 
@@ -125,10 +92,6 @@ function matchIn(haystack: string, callText: string): { matched: string; how: "e
 		}
 	}
 	return undefined;
-}
-
-export function findContradicted(records: GmRecord[], toolName: string, input: Record<string, unknown>): GmRecord[] {
-	return classifyCall(records, toolName, input, "error").dispute.map((d) => d.rec);
 }
 
 export interface HealChange {
@@ -317,8 +280,3 @@ export function signalsToFindings(signals: Signal[]): Finding[] {
 	}));
 }
 
-export function healNote(changes: HealChange[]): string {
-	const disputes = changes.filter((c) => c.kind === "disputed").length;
-	const verified = changes.filter((c) => c.kind === "verified" || c.kind === "cleared-dispute").length;
-	return `self-heal: ${disputes} disputed, ${verified} verified at ${nowIso()}`;
-}

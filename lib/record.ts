@@ -522,12 +522,6 @@ export function recordToEntry(r: GmRecord, score?: number): GmEntry {
 	};
 }
 
-export function recordText(r: GmRecord): string {
-	return [r.title, r.statement, r.why, r.how, r.avoid, r.notes, r.tags.join(" "), r.cues.join(" "), r.category, r.id]
-		.filter(Boolean)
-		.join(" \u2022 ");
-}
-
 /** Value used for catalog selection, ranking, and pruning. Deterministic and explainable. */
 export function valueScore(r: GmRecord, now = Date.now()): number {
 	const ageDays = Math.max(0, (now - Date.parse(r.stats.lastVerified || r.stats.updated || r.stats.created)) / 86_400_000);
@@ -555,10 +549,6 @@ export function similarity(a: GmRecord, b: GmRecord): number {
 export function scopeMatches(r: GmRecord, cwd: string): boolean {
 	if (r.scope.kind !== "project" || !r.scope.path) return true;
 	return pathContains(r.scope.path, cwd);
-}
-
-export function isRetired(r: GmRecord): boolean {
-	return r.status === "retired" || r.status === "superseded";
 }
 
 export function recordFileName(r: GmRecord): string {
