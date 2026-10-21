@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.5.0 - 2026-10-22
+
+
+A second rubric at the door: a record must be worth keeping, not merely correct.
+
+
+### Added
+
+
+- **Usefulness scoring** (`assessUsefulness`, new setting `minUsefulness`, default 4) - a draft is
+  scored on whether it will change what a future session does. Adds: naming a flag, file or path,
+  environment variable, dotted config key, or real command; recording both a mistake and its fix;
+  stating a contrast or caveat; re-checkable evidence; observation language; retrieval cues.
+  Subtracts: no concrete name; no cost or caveat stated (and more if it reads like a dictionary
+  definition); hedging; advice no session can act on; counting events with no cause; writing about
+  the conversation itself; throwaway paths and session ids; dumping-ground categories; too thin to act
+  on. Refusals print the scoring so the writer can fix the draft or accept there was nothing to learn.
+- **Three verdicts, not a binary gate**: below the floor the draft is discarded and nothing is
+  written; between the floor and floor+3 it is stored flagged `low-value`; above that it is stored
+  plainly.
+- **Teeth for the flag**: `/memory audit` now retires `low-value` records that never earn a lookup
+  (past `tentativeTtlDays`), and `/memory ls` shows the flag so you can see what the gate is unsure
+  about. A borderline write-time judgement is corrected by later evidence instead of fossilising.
+- Auto-captured drafts, which no human reviewed, face the floor +1. `/memory status` counts drafts
+  discarded as not worth keeping.
+- `test/usefulness.test.ts` (11 tests): discards, stored cases, the higher auto-capture bar, the flag
+  and its audit retirement, and the band boundaries.
+
+
+### Changed
+- **Behaviour worth knowing about**: `minQuality 0` no longer accepts thin records on its own - it
+  relaxes reliability only. To store a deliberately weak draft you must also relax `minUsefulness`.
+  The test that asserted the old single-switch behaviour was rewritten to assert both halves.
+- `minUsefulness` is a setting (0 disables the gate). The fault-report floor from 0.4.0 stays
+  non-configurable: an agent fault is never knowledge, whereas the right usefulness bar depends on
+  how large a store you want and how specialised your work is.
+
+
+### Notes
+
+
+- `STORE_FORMAT` and `CONTAINER_FORMAT` stay at 1; nothing about stored bytes changed. Existing
+  records are not re-scored - run `/memory audit` to have old clutter flagged for retirement.
+
 ## 0.4.0 - 2026-10-22
 
 
