@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.5.1 - 2026-10-22
+
+
+Scoring the real store, not probe examples, found records that were accurate, cited, and worthless.
+
+
+### Fixed
+
+
+- Capture no longer files the agent's own slips as environment knowledge: a shell that rejected the
+  command string (`bash: -c: line 173: syntax error near ...`), an error from a throwaway inline
+  script written in the same run (`node - <<`, `python -c`), a search that missed a guessed path
+  (`head`/`grep`/`ls` -> `No such file or directory`), and the edit-miss wordings pi actually emits
+  (`Could not find edits[N] ...`, `Could not find the exact text ...`).
+- `edit` call arguments are rendered structurally (`path|oldText=>newText`) instead of stringifying an
+  array of objects. Two records once reached the store whose entire content - title, cues, evidence -
+  was the string `[object Object]`.
+
+
+### Added
+
+
+- **Class vetoes at the write gate** (`assessExplorationDiary`, plus a refusal of any draft carrying
+  an unrenderable value): a missed search paired with "use this other search instead" is refused
+  unless a real change is named. Like the fault-report floor from 0.4.0, these are floors - no
+  setting re-admits them.
+- Refusals are counted per class and surfaced: `/memory status` ("discarded N draft(s) as not worth
+  keeping (not useful x1, exploration diary x1)") and `/memory review` ("refused at the write gate
+  (never stored): ...").
+- `test/recording-policy.test.ts` grows the discrimination cases: a checked-in script failing and a
+  real missing build artifact stay recordable while the agent's quoting slips do not.
+
+
+### Notes
+
+
+- A first attempt used a blanket "mostly a transcript" penalty, which rejected every auto-captured
+  proven-fix record because `candidateToDraft` pastes both calls verbatim. The veto is narrow instead
+  and strips the template scaffolding (`Use "..." instead, then confirm the result.`) before looking
+  for a change. Evidence and lessons: `docs/NOTES.md`.
+- Not retroactive: records written before 0.5.1 are not re-classified. In the author's store six such
+  records existed and have been retired; `/memory ls` and `/memory audit` are how you find candidates
+  in yours. `STORE_FORMAT` and `CONTAINER_FORMAT` stay at 1.
+
 ## 0.5.0 - 2026-10-22
 
 

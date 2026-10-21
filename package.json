@@ -1,6 +1,6 @@
 {
   "name": "pi-global-memory",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Indexed, budgeted, on-demand global memory for the pi coding agent: facts, research findings, and proven fixes, retrieved instead of re-researched.",
   "type": "module",
   "license": "MIT",
