@@ -187,6 +187,23 @@ with short exact anchors over whole-file rewrites, because a bad anchor can dele
 `git checkout HEAD -- <file>` recovery was needed once, which is also why work is committed in small
 steps.
 
+## Release discipline (agreed with the user, 2026-10-22)
+
+
+A version bump is its own commit and changes only `package.json`, `lib/version.ts`, and
+`CHANGELOG.md`. Feature, fix, and performance work lands in separate commits before it, so a
+release commit is the place where the version and the changelog move together and nothing else.
+`npm version` is not used because it would bump only `package.json` and leave `lib/version.ts`
+behind; `test/version.test.ts` fails if package.json, lib/version.ts, and the CHANGELOG head
+disagree, so the three are moved by hand in one commit, then tagged `v<version>` and pushed
+with `git push origin main --tags`.
+
+
+Semver under 0.x: a new user-facing command or documented output is a minor bump (0.2.0 ->
+0.3.0); fixes and performance work alone are a patch. On-disk format versions
+(`STORE_FORMAT`, `CONTAINER_FORMAT`) are independent of the package version and only move when
+the bytes change.
+
 ## Prior art found while researching (for attribution)
 
 Searched with ketch on 2026-10-21 (ketch v0.19.0), query
