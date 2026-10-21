@@ -11,6 +11,10 @@ import * as path from "node:path";
 import type { GmConfig, GmRecord, SearchQuery, Signal } from "./types.ts";
 import type { Draft, ValidationResult } from "./record.ts";
 import { CONFIG_DEFAULTS } from "./types.ts";
+import { CONTAINER_EXT, describeContainer, packRecords, unpackContainer, type ContainerHeader, type UnpackResult } from "./container.ts";
+import { redactSecrets } from "./sanitize.ts";
+import { scanPrivacy } from "./trust.ts";
+import { ensureDir, tightenMode } from "./util.ts";
 import { MemoryStore, StoreError } from "./store.ts";
 import { buildSearchIndex, discriminativeTokens, renderHits, renderRecord, searchRecords, type SearchHit, type SearchIndex } from "./search.ts";
 import { normalizeDraft, scopeMatches, similarity, valueScore } from "./record.ts";
@@ -59,22 +63,36 @@ export class MemoryService {
 	ensureStore(): void {
 		this.store.ensure();
 		const ignore = path.join(this.store.root, ".gitignore");
+		// Two postures, and both keep sensitive side-files out of version control:
+		//  - gitAutoCommit false: nothing in the store is tracked (default).
+		//  - gitAutoCommit true: the store keeps its own history of records and indexes,
+		//    but never of exports, backups, the failed-call ledger, or locks.
 		const wanted = this.cfg.gitAutoCommit
-			? ""
-			: [
-					"# pi-global-memory: knowledge can contain project-internal detail.",
-					"# Untrack the store unless you have deliberately opted in.",
-					"# To track it with git, delete this file and set gitAutoCommit true.",
-					"*",
-					"!/.gitignore",
+			? [
+					"# pi-global-memory: this store keeps its own local history of records and indexes.",
+					"# Never tracked, because these hold copies of everything or transient detail:",
+					"out/",
+					"backups/",
+					"pending/",
+					"*.gmect",
+					"*.gmect.enc",
+					".lock",
+					".git-empty-config",
 					"",
-				].join("\n");
+					]
+				: [
+						"# pi-global-memory: knowledge can contain project-internal detail.",
+						"# Untrack the store unless you have deliberately opted in.",
+						"# Opt in with: /memory config set gitAutoCommit true",
+						"*",
+						"!/.gitignore",
+						"",
+					];
 		try {
 			const current = fs.existsSync(ignore) ? fs.readFileSync(ignore, "utf8") : undefined;
-			if (wanted === "") {
-				if (current !== undefined && current.includes("pi-global-memory:")) fs.rmSync(ignore, { force: true });
-			} else if (current === undefined || (current.includes("pi-global-memory:") && current !== wanted)) {
-				fs.writeFileSync(ignore, wanted, { mode: 0o600 });
+			const ours = current !== undefined && (current.includes("pi-global-memory") || current === "");
+			if (current === undefined || (ours && current !== wanted.join("\n"))) {
+				fs.writeFileSync(ignore, wanted.join("\n"), { mode: 0o600 });
 			}
 		} catch {
 			/* best effort: a read-only mount should not break lookups */
@@ -386,8 +404,13 @@ export class MemoryService {
 		return res;
 	}
 
-	async restore(ids: string[]): Promise<{ changed: string[]; missing: string[] }> {
-		const res = await this.store.setStatus(ids, "active", `restore ${ids.join(",")}`);
+	/** Ranking helper shared by /memory ls and /memory prune: higher = keep. */
+	valueScoreOf(r: GmRecord): number {
+		return valueScore(r);
+	}
+
+	async restore(ids: string[], note?: string): Promise<{ changed: string[]; missing: string[] }> {
+		const res = await this.store.setStatus(ids, "active", note ?? `restore ${ids.join(",")}`);
 		this.writes++;
 		await this.refresh(true);
 		return res;
@@ -466,18 +489,139 @@ export class MemoryService {
 		return `GM ${mode}: ${c.active} records (${c.categories ? Object.keys(c.categories).length : 0} categories), ${c.retired} retired, ${c.invalid} unreadable${c.invalid ? "!" : ""}`;
 	}
 
-	exportAll(): string {
-		return JSON.stringify(
-			{
-				version: 1,
-				exportedAt: nowIso(),
-				root: displayPath(this.store.root),
-				records: this.store.cacheRecords().map((r) => ({ ...r, file: undefined })),
-			},
-			null,
-			1,
-		);
+	/**
+	 * Build a container for export. Records that would leak secrets or personal data
+	 * are skipped unless the caller passes allowPrivate - exporting is still a way of
+	 * handling sensitive data, so the same default posture applies here.
+	 */
+	exportRecords(opts: { passphrase?: string; note?: string; includeRetired?: boolean; category?: string; allowPrivate?: boolean } = {}): {
+		text: string;
+		packed: number;
+		encrypted: boolean;
+		skipped: { id: string; reason: string }[];
+	} {
+		const skipped: { id: string; reason: string }[] = [];
+		const chosen: Record<string, unknown>[] = [];
+		for (const r of this.store.cacheRecords()) {
+			if (!opts.includeRetired && (r.status === "retired" || r.status === "superseded")) continue;
+			if (opts.category && r.category !== opts.category) continue;
+			const body = [r.title, r.statement, r.why, r.how, r.avoid, r.notes, (r.evidence ?? []).map((e) => `${e.type} ${e.ref} ${e.note ?? ""}`).join(" ")].filter(Boolean).join("\n");
+			if (!opts.allowPrivate) {
+				const scan = scanPrivacy(body);
+				if (scan.strongPii || scan.markers.length > 0) {
+					skipped.push({
+						id: r.id,
+						reason: `privacy gate: ${scan.strongPii ? scan.pii.filter((p) => p.strong).map((p) => p.name).join(", ") : ""}${scan.markers.length ? ` confidential-sounding text (${scan.markers.slice(0, 3).join(", ")})` : ""} - pass allowPrivate if you really mean to export it`,
+					});
+					continue;
+				}
+				const secrets = redactSecrets(body, "block");
+				if (secrets.secretHits.length > 0) {
+					skipped.push({ id: r.id, reason: `secret-shaped text (${secrets.secretHits.slice(0, 3).join(", ")}) - fix or remove the record, or pass allowPrivate` });
+					continue;
+				}
+			}
+			chosen.push(this.wireRecord(r));
+		}
+		const text = packRecords(chosen, { passphrase: opts.passphrase, note: opts.note });
+		return { text, packed: chosen.length, encrypted: Boolean(opts.passphrase), skipped };
 	}
+
+	/** Record -> plain, order-stable object for the container. Stats are not exported. */
+	private wireRecord(r: GmRecord): Record<string, unknown> {
+		return {
+			id: r.id,
+			kind: r.kind,
+			category: r.category,
+			title: r.title,
+			statement: r.statement,
+			why: r.why,
+			how: r.how,
+			avoid: r.avoid,
+			notes: r.notes,
+			tags: r.tags,
+			cues: r.cues,
+			confidence: r.confidence,
+			status: r.status,
+			scope: r.scope,
+			evidence: r.evidence,
+			supersedes: r.supersedes,
+			flags: r.flags,
+			contradicts: r.contradicts,
+			created: r.stats.created,
+			updated: r.stats.updated,
+		};
+	}
+
+	/** Import a container. Every record still goes through the normal write gates. */
+	async importContainer(text: string, passphrase: string | undefined, info: RunInfo): Promise<ImportResult & { encrypted: boolean; authenticated: boolean; header?: ContainerHeader }> {
+		const result: ImportResult & { encrypted: boolean; authenticated: boolean; header?: ContainerHeader } = { added: 0, skipped: [], problems: [], encrypted: false, authenticated: false };
+		let unpacked: UnpackResult;
+		try {
+			unpacked = unpackContainer(text, passphrase);
+		} catch (err) {
+			result.problems.push(storeErrorText(err));
+			return result;
+		}
+		result.encrypted = unpacked.header.cipher !== null;
+		result.authenticated = unpacked.authenticated;
+		result.header = unpacked.header;
+		for (const raw of unpacked.records) {
+			const draft = draftFromWire(raw);
+			// Restoring a backup over its own ids is not a duplicate; anything genuinely
+			// similar still has to pass the near-duplicate guard.
+			const sameId = draft.id ? this.store.byId(draft.id) : undefined;
+			const res = await this.add(draft, info, { force: Boolean(sameId), note: `import ${unpacked.header.exportedAt}` });
+			if (res.ok && res.id) result.added++;
+			else result.skipped.push({ id: draft.id ?? draft.title ?? "?", reason: res.problems[0] ?? "rejected by the write gates" });
+		}
+		return result;
+	}
+
+	/**
+	 * Delete every record. The caller must have completed the two-step confirmation;
+	 * this writes a container backup first so the action is always reversible.
+	 */
+	async wipeEverything(info: RunInfo, opts: { passphrase?: string; backupDir?: string } = {}): Promise<{ files: number; backupFile: string; backupRecords: number; encrypted: boolean }> {
+		const pack = this.exportRecords({ includeRetired: true, passphrase: opts.passphrase, allowPrivate: true, note: "automatic backup before /memory delete-all" });
+		const stamp = nowIso().replace(/[:.]/g, "-");
+		const dir = opts.backupDir ?? path.join(this.store.root, "backups");
+		ensureDir(dir);
+		const file = path.join(dir, `pre-delete-all-${stamp}${CONTAINER_EXT}${opts.passphrase ? ".enc" : ""}`);
+		fs.writeFileSync(file, pack.text, { mode: 0o600 });
+		tightenMode(file);
+		const wiped = await this.store.wipeAll(`deleted all ${pack.packed} record(s); backup at ${displayPath(file)}`);
+		await this.refresh(true);
+		return { files: wiped.files, backupFile: displayPath(file), backupRecords: pack.packed, encrypted: pack.encrypted };
+	}
+
+	/** Where long-running command output and backups live (never in model context). */
+	outDir(): string {
+		return path.join(this.store.root, "out");
+	}
+}
+
+/** Container record -> Draft. Stats, hits, and dispute timing are deliberately not imported. */
+function draftFromWire(raw: Record<string, unknown>): Draft {
+	const scopeRaw = (raw.scope ?? { kind: "global" }) as { kind?: string; path?: string };
+	return {
+		id: typeof raw.id === "string" ? raw.id : undefined,
+		kind: typeof raw.kind === "string" ? raw.kind : undefined,
+		category: typeof raw.category === "string" ? raw.category : undefined,
+		title: typeof raw.title === "string" ? raw.title : undefined,
+		statement: typeof raw.statement === "string" ? raw.statement : undefined,
+		why: typeof raw.why === "string" ? raw.why : undefined,
+		how: typeof raw.how === "string" ? raw.how : undefined,
+		avoid: typeof raw.avoid === "string" ? raw.avoid : undefined,
+		notes: typeof raw.notes === "string" ? raw.notes : undefined,
+		tags: raw.tags,
+		cues: raw.cues,
+		confidence: typeof raw.confidence === "number" ? raw.confidence : undefined,
+		status: typeof raw.status === "string" ? raw.status : undefined,
+		scope: { kind: scopeRaw.kind === "project" ? "project" : "global", path: scopeRaw.path },
+		evidence: raw.evidence,
+		supersedes: raw.supersedes,
+	};
 }
 
 export interface ImportResult {

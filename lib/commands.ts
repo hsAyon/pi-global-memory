@@ -15,8 +15,11 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Draft } from "./record.ts";
 import { MemoryService, storeErrorText, type RunInfo } from "./service.ts";
 import { candidateToDraft, mineBranch } from "./capture.ts";
-import { configAsPlainObject, configKeys, parseConfigPatch } from "./config.ts";
-import { truncate } from "./util.ts";
+import { configKeys, parseConfigPatch } from "./config.ts";
+import { hintFor, renderConfigList, renderExplain, specFor } from "./configspec.ts";
+import { CONTAINER_MAGIC, describeContainer } from "./container.ts";
+import { browseInteractive, commitDeleteAll, containerPath, renderListing, renderOverview, type SortKey } from "./browse.ts";
+import { displayPath, tightenMode, truncate } from "./util.ts";
 import { CONFIG_DEFAULTS } from "./types.ts";
 
 export interface CommandDeps {
@@ -109,7 +112,17 @@ export async function handleMemoryCommand(rawArgs: string, ctx: ExtensionCommand
 					"/memory export [file] | /memory import <file>",
 					"/memory reindex | /memory selftest",
 					"",
-					`Privacy posture now: privacy=${service.cfg.privacy} sketchy=${service.cfg.sketchy} respectSessionPrivacy=${service.cfg.respectSessionPrivacy} requireProjectTrust=${service.cfg.requireProjectTrustForWrites}`,
+					"/memory ls [category] [sort=value|updated|created|hits|confidence|age] [retired]",
+				"                               one line per record: id, confidence, hits, age, warnings",
+				"/memory overview                 per-category counts, disputed and never-verified totals",
+				"/memory browse [category]        interactive: pick a record, then verify / retire / restore / delete it",
+				"/memory delete-all               EVERY record: needs a typed token, always writes a container backup first",
+				"/memory export [file] [all] [category=<slug>] [enc] [note=<text>] [allowprivate]",
+				"                               compressed integrity-checked container (.gmect); enc = AES-256-GCM",
+				"/memory import <file> [passphrase=<text>]   container or plain JSON; records re-pass the write gates",
+				"/memory config list | explain <key> | get <key> | set <key> <value> | where",
+				"",
+				`Privacy posture now: privacy=${service.cfg.privacy} sketchy=${service.cfg.sketchy} respectSessionPrivacy=${service.cfg.respectSessionPrivacy} requireProjectTrust=${service.cfg.requireProjectTrustForWrites}`,
 					"Defaults are private and reliable-only: personal identifiers, confidential-sounding text, and hedged claims are refused. Relax with /memory config set privacy standard|off and sketchy flag|off.",
 				].join("\n"),
 			);
@@ -302,6 +315,33 @@ export async function handleMemoryCommand(rawArgs: string, ctx: ExtensionCommand
 			deps.toggleStatus();
 			return;
 		}
+		case "ls":
+		case "list":
+		case "overview": {
+			// The high-level view, written to a file rather than dumped into context.
+			const opts = parseOptions(rest);
+			const first = rest[0] && !rest[0].includes("=") ? rest[0] : undefined;
+			const category = opts.values.category ?? first;
+			const sort = (opts.values.sort as SortKey | undefined) ?? "value";
+			const body = sub === "overview" && !category ? renderOverview(service) : renderListing(service, { category, sort, includeRetired: opts.flags.has("retired"), query: opts.values.where });
+			deliver(ctx, service, "memory-ls", body);
+			ctx.ui.notify("act on one record: /memory read <id> - verify <id> - retire <id> - delete <id> force, or /memory browse to pick interactively", "info");
+			return;
+		}
+		case "browse": {
+			const opts = parseOptions(rest);
+			await browseInteractive(ctx, service, { runInfo: deps.runInfo, refreshStatus: deps.toggleStatus }, opts.values.category ?? rest[0]);
+			deps.toggleStatus();
+			return;
+		}
+		case "delete-all": {
+			// Two-step and token-gated, always backed up. confirmDestructive cannot bypass it.
+			const token = rest.find((a) => /^[0-9A-Fa-f]{6}$/.test(a));
+			const res = await commitDeleteAll(service, info, token);
+			ctx.ui.notify(res.message, res.ok ? "warning" : "error");
+			deps.toggleStatus();
+			return;
+		}
 		case "prune": {
 			const findings = await service.audit(info);
 			const retireable = findings.findings.filter((f) => f.action === "retire");
@@ -345,54 +385,92 @@ export async function handleMemoryCommand(rawArgs: string, ctx: ExtensionCommand
 		case "config": {
 			const what = (rest[0] ?? "list").toLowerCase();
 			if (what === "list") {
-				const obj = configAsPlainObject(service.cfg);
-				const lines = configKeys().map((k) => `${k} = ${JSON.stringify(obj[k as keyof typeof obj] ?? "")}${(CONFIG_DEFAULTS as Record<string, unknown>)[k] === obj[k as keyof typeof obj] ? "  (default)" : ""}`);
-				deliver(ctx, service, "memory-config", `${lines.join("\n")}\n\nsources: ${deps.configSources().join(" > ")}\nset with: /memory config set <key> <value>`);
+				deliver(ctx, service, "memory-config", renderConfigList(service.cfg, deps.configSources(), deps.configProblems()));
+				return;
+			}
+			if (what === "explain") {
+				const key = rest[1] ?? "";
+				if (!key) {
+					deliver(ctx, service, "memory-config", renderConfigList(service.cfg, deps.configSources(), deps.configProblems()));
+					return;
+				}
+				ctx.ui.notify(renderExplain(key), specFor(key) ? "info" : "error");
 				return;
 			}
 			if (what === "get") {
 				const key = rest[1] as keyof typeof CONFIG_DEFAULTS;
 				if (!key) {
-					ctx.ui.notify("usage: /memory config get <key>", "error");
+					ctx.ui.notify("usage: /memory config get <key>    (list keys: /memory config list)", "error");
 					return;
 				}
-				ctx.ui.notify(`${key} = ${JSON.stringify((service.cfg as unknown as Record<string, unknown>)[key] ?? "")}`, "info");
+				ctx.ui.notify(`${key} = ${JSON.stringify((service.cfg as unknown as Record<string, unknown>)[key] ?? "")}\n${hintFor(key)}`, specFor(key) ? "info" : "error");
+				return;
+			}
+			if (what === "where" || what === "sources") {
+				ctx.ui.notify(
+					`sources, left wins: ${deps.configSources().join(" > ")}\nstore config file: ${displayPath(path.join(service.store.root, "config.json"))}\npi settings: the "globalMemory" key in your pi settings.json\nenvironment: PI_GLOBAL_MEMORY_*`,
+					"info",
+				);
 				return;
 			}
 			if (what === "set") {
 				const key = rest[1];
 				const value = rest.slice(2).join(" ");
 				if (!key || value === "") {
-					ctx.ui.notify(`usage: /memory config set <key> <value>\nkeys: ${configKeys().join(", ")}`, "error");
+					ctx.ui.notify(`usage: /memory config set <key> <value>\nlist: /memory config list   explain one: /memory config explain <key>\nkeys: ${configKeys().join(", ")}`, "error");
 					return;
 				}
-				const res = deps.writeConfig({ [key]: value });
+				const patch = parseConfigPatch(key, value);
+				if (patch.problems.length > 0) {
+					ctx.ui.notify(`not changed.\n${patch.problems.join("\n")}`, "error");
+					return;
+				}
+				const res = deps.writeConfig(patch.patch);
 				ctx.ui.notify(res.message, res.ok ? "info" : "error");
 				deps.toggleStatus();
 				return;
 			}
-			ctx.ui.notify("usage: /memory config [list|get <key>|set <key> <value>]", "error");
+			ctx.ui.notify("usage: /memory config [list | explain <key> | get <key> | set <key> <value> | where]", "error");
 			return;
 		}
 		case "export": {
-			const target = rest[0] ?? path.join(service.store.root, "out", `export-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
-			const json = service.exportAll();
+			// Container export: compressed, integrity-checked, optionally encrypted.
+			// Options are positional and order-free: a file path, `all`, `category=<slug>`,
+			// `enc`, `passphrase=<text>`, `note=<text>`, `allowprivate`.
+			const opts = parseOptions(rest);
+			const pw = resolvePassphrase(opts, opts.flags.has("enc"));
+			const res = service.exportRecords({
+				passphrase: pw.passphrase,
+				note: opts.values.note,
+				includeRetired: opts.flags.has("all"),
+				category: opts.values.category,
+				allowPrivate: opts.flags.has("allowprivate"),
+			});
+			const target = opts.positional[0] ?? path.join(service.outDir(), containerPath(service, "export", Boolean(pw.passphrase)));
 			try {
 				fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-				fs.writeFileSync(target, json, { mode: 0o600 });
-				ctx.ui.notify(`exported ${service.store.cacheRecords().length} record(s) to ${target}`, "info");
+				fs.writeFileSync(target, res.text, { mode: 0o600 });
+				tightenMode(target);
+				const skippedText = res.skipped.length
+					? `\nskipped by the privacy gate (${res.skipped.length}):\n${res.skipped.slice(0, 10).map((s) => `  - ${s.id}: ${s.reason}`).join("\n")}`
+					: "";
+				ctx.ui.notify(
+					`exported ${res.packed} record(s) -> ${target}\n${describeContainer(res.text, pw.passphrase)}${pw.warning ? `\n${pw.warning}` : ""}${skippedText}`,
+					res.skipped.length ? "warning" : "info",
+				);
 			} catch (err) {
 				ctx.ui.notify(`export failed: ${storeErrorText(err)}`, "error");
 			}
 			return;
 		}
 		case "import": {
-			const file = rest[0];
+			// /memory import <file> [passphrase=<text>] - container (preferred) or plain JSON.
+			const opts = parseOptions(rest);
+			const file = opts.positional[0];
 			if (!file) {
-				ctx.ui.notify("usage: /memory import <file.json> (records pass the same privacy/reliability gates as any write)", "error");
+				ctx.ui.notify("usage: /memory import <file> [passphrase=<text>]\ncontainers are compressed and integrity-checked; a passphrase opens an AES-256-GCM container. Imported records always re-pass the write gates.", "error");
 				return;
 			}
-			const { importRecords } = await import("./service.ts");
 			let text = "";
 			try {
 				text = fs.readFileSync(file, "utf8");
@@ -400,8 +478,32 @@ export async function handleMemoryCommand(rawArgs: string, ctx: ExtensionCommand
 				ctx.ui.notify(`cannot read ${file}: ${storeErrorText(err)}`, "error");
 				return;
 			}
+			if (text.split(/\r?\n/)[0]?.trim() === CONTAINER_MAGIC) {
+				const pw = resolvePassphrase(opts, false);
+				let summary = "";
+				try {
+					summary = describeContainer(text, pw.passphrase);
+				} catch (err) {
+					ctx.ui.notify(`container not readable: ${storeErrorText(err)}`, "error");
+					return;
+				}
+				const res = await service.importContainer(text, pw.passphrase, info);
+				const lines = [
+					`container: ${summary}`,
+					`imported ${res.added} record(s)${res.skipped.length ? `, skipped ${res.skipped.length}` : ""}`,
+					res.authenticated
+						? "authenticated: the AES-GCM tag verified, so this file is exactly what was exported"
+						: "integrity: payload digest matched. A plain container detects corruption, not forgery - use /memory export <file> enc for authenticity.",
+					...res.problems.map((p) => `problem: ${p}`),
+					...res.skipped.slice(0, 40).map((s) => `- ${s.id}: ${s.reason}`),
+				];
+				deliver(ctx, service, "memory-import", lines.join("\n"));
+				deps.toggleStatus();
+				return;
+			}
+			const { importRecords } = await import("./service.ts");
 			const res = await importRecords(service, text, info);
-			deliver(ctx, service, "memory-import", [`imported ${res.added}`, ...res.skipped.slice(0, 40).map((s) => `- ${s.id}: ${s.reason}`)].join("\n"));
+			deliver(ctx, service, "memory-import", [`plain JSON import: ${res.added} record(s)${res.skipped.length ? `, skipped ${res.skipped.length}` : ""}`, ...res.problems.map((p) => `problem: ${p}`), ...res.skipped.slice(0, 40).map((s) => `- ${s.id}: ${s.reason}`)].join("\n"));
 			deps.toggleStatus();
 			return;
 		}
@@ -470,4 +572,39 @@ async function runSelftest(service: MemoryService, info: RunInfo): Promise<strin
 
 export function draftForTest(): Draft {
 	return { kind: "fact", category: "misc", title: "x", statement: "y" };
+}
+
+/** `key=value` pairs and bare flags, after any positional path. Quoted values keep spaces. */
+export function parseOptions(args: string[]): { positional: string[]; values: Record<string, string>; flags: Set<string> } {
+	const positional: string[] = [];
+	const values: Record<string, string> = {};
+	const flags = new Set<string>();
+	for (const a of args) {
+		const eq = a.indexOf("=");
+		if (eq > 0) {
+			values[a.slice(0, eq).toLowerCase()] = a.slice(eq + 1);
+			continue;
+		}
+		const bare = a.toLowerCase();
+		if (["all", "enc", "allowprivate", "retired", "force", "yes"].includes(bare)) {
+			flags.add(bare);
+			continue;
+		}
+		positional.push(a);
+	}
+	return { positional, values, flags };
+}
+
+/**
+ * Passphrase resolution, deliberately cautious: command arguments end up in the pi
+ * session transcript, so the environment variable is the recommended route and every
+ * other route says out loud what it cost.
+ */
+function resolvePassphrase(opts: { values: Record<string, string> }, askedForEncryption: boolean): { passphrase?: string; warning?: string } {
+	const fromEnv = (process.env.PI_GLOBAL_MEMORY_PASSPHRASE ?? "").trim();
+	if (fromEnv) return { passphrase: fromEnv, warning: "passphrase read from PI_GLOBAL_MEMORY_PASSPHRASE (never stored in the file)" };
+	const arg = opts.values.passphrase ?? opts.values.pw;
+	if (arg) return { passphrase: arg, warning: "warning: the passphrase was a command argument, so it is visible in this session transcript. Prefer PI_GLOBAL_MEMORY_PASSPHRASE." };
+	if (askedForEncryption) return { warning: "no passphrase found, so the container was NOT encrypted. Set PI_GLOBAL_MEMORY_PASSPHRASE (recommended) or pass passphrase=<text>." };
+	return {};
 }
