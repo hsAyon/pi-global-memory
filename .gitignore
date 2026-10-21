@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+# Never commit a real memory store into this package repo.
+store/
+.local-store/
+coverage/
