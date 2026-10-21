@@ -9,7 +9,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
-const SOURCES = ["index.ts", "lib/types.ts", "lib/util.ts", "lib/sanitize.ts", "lib/trust.ts", "lib/record.ts", "lib/config.ts", "lib/store.ts", "lib/search.ts", "lib/prompt.ts", "lib/capture.ts", "lib/heal.ts", "lib/service.ts", "lib/tools.ts", "lib/commands.ts", "lib/schemas.ts"];
+/** Every shipped module is scanned; adding a file cannot dodge the invariant. */
+const SHIPPED = ["index.ts", ...fs.readdirSync(path.join(ROOT, "lib")).filter((f) => f.endsWith(".ts")).map((f) => `lib/${f}`)].sort();
+const SOURCES = SHIPPED;
+
 
 const FORBIDDEN: { name: string; re: RegExp }[] = [
 	{ name: "node:http", re: /\bnode:http\b|\bfrom\s+["']http["']|\brequire\(["']http["']\)/ },
@@ -28,8 +31,24 @@ const FORBIDDEN: { name: string; re: RegExp }[] = [
 	{ name: "shell string execution", re: /\bexecSync\b|\bspawnSync\b|\bchild_process\b|(?<![.\w$])exec\s*\(/ },
 ];
 
-/** Only these files may spawn a process at all, and only with git's protocol layer off. */
-const PROCESS_USERS = new Set(["lib/util.ts", "lib/store.ts"]);
+/** Only this one file may spawn a process at all, and only for contained git. */
+const PROCESS_USERS = new Set(["lib/util.ts"]);
+/** The confinement rules are asserted here so a removed control fails a test. */
+const GIT_CONTAINMENT = [
+	"GIT_ALLOW_PROTOCOL",
+	"protocol.ext.allow=never",
+	"GIT_CONFIG_GLOBAL",
+	"GIT_CONFIG_SYSTEM",
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_TERMINAL_PROMPT",
+	"GIT_ASKPASS",
+	"GIT_SSH_COMMAND",
+	"core.hooksPath",
+	"--git-dir",
+	"--work-tree",
+	"GIT_ALLOWED",
+];
 
 test("every source file listed for the offline scan exists", () => {
 	const missing = SOURCES.filter((s) => !fs.existsSync(path.join(ROOT, s)));
@@ -67,6 +86,9 @@ test("child_process is only used for git, with argv form and no shell", () => {
 	if (/\bspawn\(/.test(store)) throw new Error("store.ts must spawn only through the run() helper");
 	for (const required of ["GIT_ALLOW_PROTOCOL", "protocol.ext.allow=never", '"add"', '"commit"']) {
 		if (!store.includes(required)) throw new Error(`store.ts lost a git hardening control: ${required}`);
+	}
+	for (const control of GIT_CONTAINMENT) {
+		if (!store.includes(control)) throw new Error(`store.ts lost a git containment control: ${control}`);
 	}
 	for (const networked of ['"push"', '"fetch"', '"pull"', '"clone"', '"ls-remote"', '"submodule"']) {
 		if (store.includes(networked)) throw new Error(`store.ts may run a networked git subcommand: ${networked}`);

@@ -13,8 +13,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { GmConfig, GmRecord, GmStatus, LoadedStore, Signal } from "./types.ts";
-import { displayPath, ensureDir, exists, hash32, listFiles, nowIso, readTextLimited, relPath, run, tightenMode, writeFileAtomic } from "./util.ts";
+import { displayPath, ensureDir, exists, hash32, isDirectory, listFiles, nowIso, readTextLimited, relPath, run, tightenMode, writeFileAtomic } from "./util.ts";
 import { parseRecordFile, recordFileName, recordToEntry, serializeRecord, similarity as similarityOf, valueScore } from "./record.ts";
+import { STORE_FORMAT } from "./version.ts";
 
 const RECORD_MAX_BYTES = 64_000;
 const LOCK_NAME = ".lock";
@@ -69,6 +70,52 @@ export class MemoryStore {
 		ensureDir(path.join(this.root, "records"));
 		ensureDir(path.join(this.root, "archive"));
 		ensureDir(path.join(this.root, "pending"));
+		this.writeIgnorePosture();
+	}
+
+	/**
+	 * Two postures, and in both, sensitive side-files stay out of version control:
+	 *  - gitAutoCommit false (default): nothing in the store is tracked.
+	 *  - true: the store keeps its own history of records and indexes, never of
+	 *    exports, backups, the failed-call ledger, locks, or the isolation config.
+	 */
+	private ignoreWanted(): string {
+		if (this.cfg.gitAutoCommit) {
+			return [
+				"# pi-global-memory: this store keeps its own local history of records and indexes.",
+				"# Never tracked, because these hold copies of everything, or transient detail:",
+				"out/",
+				"backups/",
+				"pending/",
+				"*.gmect",
+				"*.gmect.enc",
+				".lock",
+				".git-empty-config",
+				"",
+			].join("\n");
+		}
+		return [
+			"# pi-global-memory: knowledge can contain project-internal detail.",
+			"# Untrack the store unless you have deliberately opted in.",
+			"# Opt in with: /memory config set gitAutoCommit true",
+			"*",
+			"!/.gitignore",
+			"",
+		].join("\n");
+	}
+
+	/** Only rewrites our own file, and only when it differs. */
+	private writeIgnorePosture(): void {
+		try {
+			const file = this.safeJoin(".gitignore");
+			const wanted = this.ignoreWanted();
+			const current = exists(file) ? fs.readFileSync(file, "utf8") : undefined;
+			if (current === undefined || (current.includes("pi-global-memory") && current !== wanted)) {
+				fs.writeFileSync(file, wanted, { mode: 0o600 });
+			}
+		} catch {
+			/* best effort: a read-only mount should not break lookups */
+		}
 	}
 
 	inside(target: string): string {
@@ -326,6 +373,57 @@ export class MemoryStore {
 		});
 	}
 
+	/**
+	 * Remove every record file (live and archived). Only ever called after the two-
+	 * step token confirmation in /memory delete-all, and callers must write a backup
+	 * container first. Config, indexes, and the store's own .gitignore survive.
+	 */
+	async wipeAll(note: string): Promise<{ files: number; categories: string[] }> {
+		return await this.withLock(async () => {
+			const before = this.cacheRecords();
+			const categories = [...new Set(before.map((r) => r.category))];
+			const removed: string[] = [];
+			for (const dir of [path.join(this.root, "records"), path.join(this.root, "archive")]) {
+				for (const file of listFiles(dir, ".md", this.cfg.maxActiveRecords * 6 + 500)) {
+					this.inside(file);
+					try {
+						fs.rmSync(file, { force: true });
+						removed.push(relPath(this.root, file));
+					} catch {
+						/* keep going: a partial wipe is reported honestly below */
+					}
+				}
+			}
+			// Empty category directories, so /memory ls is not misleading.
+			for (const dir of [path.join(this.root, "records"), path.join(this.root, "archive")]) {
+				if (!isDirectory(dir)) continue;
+				for (const name of fs.readdirSync(dir)) {
+					const sub = path.join(dir, name);
+					this.inside(sub);
+					if (isDirectory(sub)) {
+						try {
+							fs.rmdirSync(sub);
+						} catch {
+							/* not empty */
+						}
+					}
+				}
+			}
+			const signalsPath = this.signalsFile();
+			try {
+				if (exists(signalsPath)) fs.rmSync(signalsPath, { force: true });
+			} catch {
+				/* signals are a convenience */
+			}
+			const loaded = await this.load(true);
+			const idx = this.indexPayload(loaded.records);
+			writeFileAtomic(this.safeJoin("index.json"), idx.json);
+			writeFileAtomic(this.safeJoin("INDEX.md"), idx.md);
+			await this.maybeGitCommit(note);
+			return { files: removed.length, categories };
+		});
+	}
+
 	/** Record that a record was surfaced. Batched; call flushStats() at quiet points. */
 	touch(ids: string[]): void {
 		for (const id of ids) {
@@ -386,9 +484,9 @@ export class MemoryStore {
 		const live = records.filter((r) => r.status !== "retired").sort((a, b) => (a.category === b.category ? valueScore(b) - valueScore(a) : a.category.localeCompare(b.category)));
 		const generatedAt = nowIso();
 		const index = {
-			version: 1,
+			version: STORE_FORMAT,
 			generatedAt,
-			root: displayPath(this.root),
+			storeName: path.basename(this.root),
 			count: live.length,
 			categories: Object.entries(
 				live.reduce<Record<string, number>>((acc, r) => {
@@ -501,43 +599,154 @@ export class MemoryStore {
 		});
 	}
 
-	// --- optional git bookkeeping (local only: never pushes, protocol refused) ---
-
+	// --- internal versioning of records (git), strictly local and contained ---
 	/**
-	 * Hard offline settings. `GIT_ALLOW_PROTOCOL=none` makes any networked git
-	 * subcommand fail closed, so an operator cannot be tricked into a push or
-	 * fetch by a crafted commit message or path.
+	 * Git is used here for one job: keeping history for the record files inside this
+	 * store. Every call below is contained so it cannot touch anything else:
+	 *
+	 * 1. Contained to this store. `--git-dir`/`--work-tree` (and matching GIT_DIR /
+	 *    GIT_WORK_TREE env) point at `<store>/.git`. Git's upward repository discovery
+	 *    is therefore never in play: a store sitting inside your project, or inside
+	 *    your home-directory repo, cannot be committed to by this extension.
+	 * 2. Offline. GIT_ALLOW_PROTOCOL=none refuses every remote transport, and
+	 *    `protocol.ext.allow=never` refuses external helpers. No networked subcommand
+	 *    is in the allow-list, and the offline test fails the build if one appears.
+	 * 3. Insulated from your configuration. GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM point
+	 *    at an empty file inside the store, so aliases, credential helpers, hooks,
+	 *    fsmonitor watchers, and proxy settings from your global git config cannot be
+	 *    reached by these runs. Hooks are additionally disabled via core.hooksPath.
+	 * 4. No prompts, no popups. GIT_TERMINAL_PROMPT=0, GIT_ASKPASS=echo, and
+	 *    GIT_SSH_COMMAND that fails closed - a network attempt dies instead of asking.
+	 * 5. Subcommand allow-list, checked before spawn. Anything not listed throws.
+	 * 6. Timeouts and output caps on every call (see run()).
 	 */
+	static readonly GIT_ALLOWED = new Set(["rev-parse", "init", "add", "commit", "status", "log", "config", "ls-files"]);
+
+	private gitEmptyConfig(): string {
+		return path.join(this.root, ".git-empty-config");
+	}
+
+	private gitHooksDir(): string {
+		return path.join(this.root, ".git", "hooks-disabled");
+	}
+
+	private gitDir(): string {
+		return path.join(this.root, ".git");
+	}
+
 	private gitEnv(): Record<string, string> {
-		return { GIT_ALLOW_PROTOCOL: "none", GIT_PAGER: "cat", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
+		return {
+			GIT_ALLOW_PROTOCOL: "none",
+			GIT_PAGER: "cat",
+			GIT_TERMINAL_PROMPT: "0",
+			GIT_OPTIONAL_LOCKS: "0",
+			GIT_ASKPASS: "echo",
+			GIT_SSH_COMMAND: "exit 1",
+			GIT_CONFIG_GLOBAL: this.gitEmptyConfig(),
+			GIT_CONFIG_SYSTEM: this.gitEmptyConfig(),
+			GIT_DIR: this.gitDir(),
+			GIT_WORK_TREE: this.root,
+			GIT_CONFIG_COUNT: "0",
+		};
 	}
 
+	/** Throws for anything outside the allow-list, so no caller can reach a remote. */
 	private gitArgs(args: string[]): string[] {
-		return ["-c", "protocol.ext.allow=never", "-c", "core.hooksPath=.git/hooks-disabled", "-C", this.root, ...args];
+		const sub = String(args[0] ?? "");
+		if (!MemoryStore.GIT_ALLOWED.has(sub)) {
+			throw new StoreError("invalid", `refused git subcommand "${sub}" (allowed: ${[...MemoryStore.GIT_ALLOWED].join(", ")})`);
+		}
+		return [
+			"--git-dir",
+			this.gitDir(),
+			"--work-tree",
+			this.root,
+			"-c",
+			"protocol.ext.allow=never",
+			"-c",
+			`core.hooksPath=${this.gitHooksDir()}`,
+			"-c",
+			"core.fsmonitor=false",
+			"-c",
+			"commit.gpgsign=false",
+			"-c",
+			"gc.auto=0",
+			"-c",
+			"core.pager=cat",
+			// Commit identity for this repository only, in the global (pre-subcommand)
+			// position where git accepts it. Override it yourself with
+			//   git --git-dir=<store>/.git config user.name "You"
+			"-c",
+			"user.name=pi-global-memory",
+			"-c",
+			"user.email=memory@localhost",
+			...args,
+		];
 	}
 
+	/** Only true when THIS store has its own repository, never a parent one. */
+	private async gitUsableNow(): Promise<boolean> {
+		if (!exists(this.gitDir())) return false;
+		const probe = await run("git", this.gitArgs(["rev-parse", "--is-inside-work-tree"]), this.root, 5000, this.gitEnv());
+		return probe.code === 0 && probe.stdout.trim() === "true";
+	}
+
+	/** Opt-in internal versioning: keep the store repo, then commit record changes. */
 	private async maybeGitCommit(message: string): Promise<void> {
 		if (!this.cfg.gitAutoCommit) return;
+		this.ensureGitIsolationFiles();
 		if (!this.gitChecked) {
 			this.gitChecked = true;
-			const probe = await run("git", this.gitArgs(["rev-parse", "--is-inside-work-tree"]), this.root, 5000, this.gitEnv());
-			this.gitUsable = probe.code === 0 && probe.stdout.trim() === "true";
+			if (!exists(this.gitDir())) {
+				// Create the repository for this store only. init is in the allow-list and
+				// runs with the same contained env, so it cannot init a parent directory.
+				const init = await run("git", this.gitArgs(["init", "-q", "--initial-branch=main"]), this.root, 10_000, this.gitEnv());
+				if (init.code !== 0) {
+					this.gitUsable = false;
+					return;
+				}
+				ensureDir(this.gitHooksDir());
+			}
+			this.gitUsable = await this.gitUsableNow();
 		}
 		if (!this.gitUsable) return;
-		if (/[\r\n"]/g.test(message)) message = message.replace(/[\r\n"]+/g, " ").slice(0, 120);
-		// Pathspec "." keeps the commit scoped to the store directory even when the
-		// store sits inside a larger work tree, so unrelated user changes stay out.
+		const safeMessage = /[\r\n"]/g.test(message) ? message.replace(/[\r\n"]+/g, " ").slice(0, 120) : message.slice(0, 120);
+		// Pathspec "." plus the contained work tree: only this store's files are staged.
 		const add = await run("git", this.gitArgs(["add", "-A", "--", "."]), this.root, 8000, this.gitEnv());
 		if (add.code !== 0) return;
-		await run("git", this.gitArgs(["commit", "-q", "-m", `global-memory: ${message}`, "--", "."]), this.root, 8000, this.gitEnv());
+		const status = await run("git", this.gitArgs(["status", "--porcelain", "--", "."]), this.root, 8000, this.gitEnv());
+		if (status.stdout.trim() === "") return;
+		await run(
+			"git",
+			this.gitArgs(["commit", "-q", "-m", `global-memory: ${safeMessage}`, "--", "."]),
+			this.root,
+			8000,
+			this.gitEnv(),
+		);
 	}
 
-	async gitStatus(): Promise<{ usable: boolean; dirty: number; head: string }> {
-		const probe = await run("git", this.gitArgs(["rev-parse", "--is-inside-work-tree"]), this.root, 5000, this.gitEnv());
-		if (probe.code !== 0 || probe.stdout.trim() !== "true") return { usable: false, dirty: 0, head: "" };
-		const status = await run("git", this.gitArgs(["--no-pager", "status", "--porcelain", "--", "."]), this.root, 8000, this.gitEnv());
-		const head = await run("git", this.gitArgs(["--no-pager", "log", "-1", "--format=%h %s"]), this.root, 5000, this.gitEnv());
-		return { usable: true, dirty: status.stdout.trim() === "" ? 0 : status.stdout.trim().split("\n").length, head: head.stdout.trim() };
+	/**
+	 * An empty config file so global/system config is genuinely empty rather than
+	 * absent (absent still resolves to the user's files), and an empty hooks directory
+	 * so repo-local hooks cannot run.
+	 */
+	private ensureGitIsolationFiles(): void {
+		this.writeIgnorePosture();
+		try {
+			const cfg = this.safeJoin(".git-empty-config");
+			if (!exists(cfg)) fs.writeFileSync(cfg, "# deliberately empty: this extension's git runs must not read your global config\n", { mode: 0o600 });
+			if (exists(this.gitDir())) ensureDir(this.gitHooksDir());
+		} catch {
+			/* best effort: without these the env override simply falls back, and commits fail closed */
+		}
+	}
+
+	async gitStatus(): Promise<{ usable: boolean; dirty: number; head: string; ownRepo: boolean }> {
+		const ownRepo = exists(this.gitDir());
+		if (!ownRepo || !(await this.gitUsableNow())) return { usable: false, dirty: 0, head: "", ownRepo };
+		const status = await run("git", this.gitArgs(["status", "--porcelain", "--", "."]), this.root, 8000, this.gitEnv());
+		const head = await run("git", this.gitArgs(["log", "-1", "--format=%h %s"]), this.root, 5000, this.gitEnv());
+		return { usable: true, dirty: status.stdout.trim() === "" ? 0 : status.stdout.trim().split("\n").length, head: head.stdout.trim(), ownRepo };
 	}
 
 	/** Structural self-check used by `/memory doctor`. */
