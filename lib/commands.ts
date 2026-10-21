@@ -12,15 +12,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { Draft } from "./record.ts";
 import { MemoryService, storeErrorText, type RunInfo } from "./service.ts";
 import { candidateToDraft, mineBranch } from "./capture.ts";
 import { configKeys, parseConfigPatch } from "./config.ts";
 import { hintFor, renderConfigList, renderExplain, specFor } from "./configspec.ts";
-import { CONTAINER_MAGIC, describeContainer } from "./container.ts";
+import { CONTAINER_MAGIC, describeContainer, inspectContainer } from "./container.ts";
 import { browseInteractive, commitDeleteAll, containerPath, renderListing, renderOverview, type SortKey } from "./browse.ts";
 import { displayPath, tightenMode, truncate } from "./util.ts";
 import { CONFIG_DEFAULTS } from "./types.ts";
+import { VERIFIED_PI_VERSION } from "./version.ts";
 
 export interface CommandDeps {
 	service: MemoryService;
@@ -117,6 +117,7 @@ export async function handleMemoryCommand(rawArgs: string, ctx: ExtensionCommand
 				"/memory overview                 per-category counts, disputed and never-verified totals",
 				"/memory browse [category]        interactive: pick a record, then verify / retire / restore / delete it",
 				"/memory delete-all               EVERY record: needs a typed token, always writes a container backup first",
+				"/memory inspect <file> [passphrase=]   what a container holds, is it authenticated - without importing",
 				"/memory export [file] [all] [category=<slug>] [enc] [note=<text>] [allowprivate]",
 				"                               compressed integrity-checked container (.gmect); enc = AES-256-GCM",
 				"/memory import <file> [passphrase=<text>]   container or plain JSON; records re-pass the write gates",
@@ -178,6 +179,7 @@ export async function handleMemoryCommand(rawArgs: string, ctx: ExtensionCommand
 				`enabled=${service.cfg.enabled} use=${p.use} record=${p.record}`,
 				...(p.reasons.length ? [`why: ${p.reasons.join("; ")}`] : []),
 				`store: ${service.store.root} (ephemeral-session guard=${service.cfg.respectSessionPrivacy ? "on" : "off"}, projectTrustRequired=${service.cfg.requireProjectTrustForWrites ? "on" : "off"})`,
+				`verified against pi ${VERIFIED_PI_VERSION}, this build is ${deps.version}`,
 				service.statusSummary(info),
 				`writes this session: ${p.writesUsed}/${p.writesAllowed}; quota-blocked=${!service.posture(info).record && p.writesUsed >= service.cfg.maxWritesPerSession}`,
 				`session: id=${info.sessionId} file=${info.sessionFile ?? "(in-memory)"} ephemeral=${info.ephemeral} trusted=${info.projectTrusted} mode=${info.mode}`,
@@ -334,6 +336,29 @@ export async function handleMemoryCommand(rawArgs: string, ctx: ExtensionCommand
 			deps.toggleStatus();
 			return;
 		}
+		case "inspect": {
+			// Look at a container without importing anything: what is in it, is it encrypted,
+			// does it verify. Useful before trusting a file somebody sent you.
+			const opts = parseOptions(rest);
+			const file = opts.positional[0];
+			if (!file) {
+				ctx.ui.notify("usage: /memory inspect <file.gmect> [passphrase=<text>]", "error");
+				return;
+			}
+			const pw = resolvePassphrase(opts, false);
+			try {
+				const text = fs.readFileSync(file, "utf8");
+				const info = inspectContainer(text);
+				const bits = [`container: ${describeContainer(text, pw.passphrase)}`];
+				if (info.encrypted && !pw.passphrase) bits.push("metadata is readable; a passphrase is needed to see the records");
+				if (!info.encrypted) bits.push("importing this file re-runs every write gate, so a hostile file cannot inject a record the rules would refuse");
+				ctx.ui.notify(bits.join("\n"), "info");
+			} catch (err) {
+				ctx.ui.notify(`cannot inspect: ${err instanceof Error ? err.message : String(err)}`, "error");
+			}
+			return;
+		}
+
 		case "delete-all": {
 			// Two-step and token-gated, always backed up. confirmDestructive cannot bypass it.
 			const token = rest.find((a) => /^[0-9A-Fa-f]{6}$/.test(a));
@@ -446,7 +471,7 @@ export async function handleMemoryCommand(rawArgs: string, ctx: ExtensionCommand
 				category: opts.values.category,
 				allowPrivate: opts.flags.has("allowprivate"),
 			});
-			const target = opts.positional[0] ?? path.join(service.outDir(), containerPath(service, "export", Boolean(pw.passphrase)));
+			const target = opts.positional[0] ?? path.join(service.outDir(), containerPath("export", Boolean(pw.passphrase)));
 			try {
 				fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
 				fs.writeFileSync(target, res.text, { mode: 0o600 });
@@ -568,10 +593,6 @@ async function runSelftest(service: MemoryService, info: RunInfo): Promise<strin
 	push("catalog budget within a sane range", injected > 0 && injected <= 6000, `catalogMaxChars=${injected}`);
 	push("private-by-default posture", service.cfg.privacy === "strict" && service.cfg.sketchy === "block", `privacy=${service.cfg.privacy} sketchy=${service.cfg.sketchy}`);
 	return out;
-}
-
-export function draftForTest(): Draft {
-	return { kind: "fact", category: "misc", title: "x", statement: "y" };
 }
 
 /** `key=value` pairs and bare flags, after any positional path. Quoted values keep spaces. */

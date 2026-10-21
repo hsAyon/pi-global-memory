@@ -10,8 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { GmConfig, GmRecord, SearchQuery, Signal } from "./types.ts";
 import type { Draft, ValidationResult } from "./record.ts";
-import { CONFIG_DEFAULTS } from "./types.ts";
-import { CONTAINER_EXT, describeContainer, packRecords, unpackContainer, type ContainerHeader, type UnpackResult } from "./container.ts";
+import { CONTAINER_EXT, packRecords, unpackContainer, type ContainerHeader, type UnpackResult } from "./container.ts";
 import { redactSecrets } from "./sanitize.ts";
 import { scanPrivacy } from "./trust.ts";
 import { ensureDir, tightenMode } from "./util.ts";
@@ -682,5 +681,4 @@ export function storeErrorText(err: unknown): string {
 	return String((err as Error)?.message ?? err);
 }
 
-export const DEFAULTS_REF = CONFIG_DEFAULTS;
 export type { GmRecord, Signal };
