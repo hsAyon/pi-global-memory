@@ -16,6 +16,7 @@ This document states what `pi-global-memory` guarantees, what it does not, and w
 | A container file being tampered with, truncated, or weaponised as a decompression bomb | Payload SHA-256 verified on import; encrypted containers additionally authenticated (AES-256-GCM with the header as additional authenticated data, so header edits fail the tag). Inflate is capped (`maxOutputLength`), record counts and text size are capped, unknown versions/ciphers are refused. `test/container.test.ts` covers each path. |
 | An exported copy quietly containing a secret or personal identifier | The export path re-scans each record: secret-shaped or personal/confidential text is skipped and reported unless `allowprivate` is passed deliberately. |
 | A store accumulating the agent's own faults, which then steers every later session | Failures of the agent or its runtime are classified out of capture before they can become records, and the write gate refuses an agent saving one deliberately. Exclusions are counted in `/memory review`, never silent. See "What the store refuses to record". |
+| A store quietly filling with the agent's exploration log - searches that missed, commands the shell rejected, scripts thrown away minutes later | Those failures are classified out of capture before they can pair up, and an "exploration diary" draft is refused at the write gate. Six such records once entered the store from a single scratch session; the counts are visible in `/memory review` and `/memory status`. |
 | A store filling with accurate uselessness - textbook facts, vague advice, session trivia - diluting retrieval | A separate usefulness rubric decides whether a draft deserves a slot at all; see "The second gate: is it worth keeping?" |
 | A bulk delete happening by accident, or without a way back | `/memory delete-all` stages a single-use token that must be typed in a second call, expires in 10 minutes, and writes a container backup before deleting anything. `confirmDestructive: false` cannot lower this floor. |
 | Path traversal out of the store (including through `category`, `id`, `scope.path`) | Every path is produced by `MemoryStore.safeJoin` and verified with `inside()`; `..`, absolute paths, and separators in ids/categories are rejected. `restrictProjectPaths` keeps project-scoped records inside the cwd. |
@@ -80,19 +81,23 @@ Two independent layers enforce that:
 - **Capture classification** (`lib/capture.ts`): errored tool observations are matched against the
   phrases pi itself emits (`Tool "<name>" not found`, `Tool "<name>" failed`, `Invalid arguments for
   tool ...`, `Request was aborted`, `Compaction cancelled`, context-overflow and rate-limit phrasing)
-  plus structural tells - a call with no usable argument, an `edit` whose `oldText` did not match.
-  Matches are dropped, counted, and reported in `/memory review`.
-- **The write gate** (`lib/trust.ts`): a draft that pairs an agent-runtime subject with a failure
-  predicate is refused, whoever wrote it. Relaxing `privacy`, `sketchy`, or `minQuality` does not
-  re-admit it - it is a floor, not a posture, in the same spirit as the `delete-all` token.
+  plus structural tells - a call with no usable argument, an `edit` whose `oldText` did not match, an
+  argument logged as `[object Object]`, a shell that rejected the command string before running it
+  (`bash: -c: line 173: syntax error near ...`), an error thrown by a throwaway script written in the
+  same session (`node - <<`, `python -c`), and a search that missed a guessed path. Matches are
+  dropped, counted, and reported in `/memory review`.
+- **The write gate** (`lib/trust.ts`): a draft is refused, whoever wrote it, if it pairs an
+  agent-runtime subject with a failure predicate; if it is an **exploration diary** (a missed search
+  paired with "use this other search instead", where nothing about the situation actually changed); or
+  if it carries an unrenderable value such as `[object Object]`. Relaxing `privacy`, `sketchy`, or
+  `minQuality` does not re-admit any of them - they are floors, not postures, in the same spirit as the
+  `delete-all` token.
 
 Whole-word subject matching is deliberate: "the ssh session times out", "the systemd service fails to
 start", and "npm ci fails when the lockfile is stale" are real environment knowledge and stay
 recordable, while "pi crashed", "compaction error", and "the model runner failed" are not. The refusal
 message points at the durable rule instead - the flag, path, or setting that explains the behaviour -
 because the fact implied by a fault is usually worth keeping even when the fault is not.
-
-| A store filling with accurate uselessness - textbook facts, vague advice, session trivia - diluting retrieval | A separate **usefulness** rubric decides whether a draft deserves a slot at all. Below `minUsefulness` it is discarded with the scoring printed; between the floor and floor+3 it is stored flagged `low-value`, and `/memory audit` retires flagged records that never earn a lookup. |
 
 ## The second gate: is it worth keeping?
 

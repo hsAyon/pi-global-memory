@@ -274,6 +274,16 @@ installs dependencies from package.json"), which is why "states no cost, contras
 "reads like a dictionary definition" are separate deductions - a rubric needs adversarial examples
 before it is wired, not after.
 
+**Scoring and vetoing are different mechanisms, and both are needed.** Auditing the real store after
+0.5.0 turned up records that scored 10/10 and were still worthless: a search that missed paired with a
+search that worked, an error from a script written thirty seconds earlier, a record whose entire
+content was the string `[object Object]` because call arguments had been stringified rather than read.
+No weighted rubric will reliably catch those, because they are not weak records - by every signal that
+can be weighted, they are strong. They are the wrong *kind* of thing. So three shapes are vetoed
+classically, with no score involved and no setting that relaxes them: agent/runtime fault reports
+(0.4.0), exploration diaries, and drafts carrying an unrenderable value. Rubric for degree, veto for
+kind.
+
 ## Known trade-offs
 
 - The catalog is a ranked *sample*, not the whole store: past `maxIndexEntries` the agent must search. Making the sample bigger costs context on every turn for every user; the pointer line keeps the cost of being wrong at one extra tool call.

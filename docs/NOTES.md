@@ -230,6 +230,40 @@ service fails to start" writable - `session`, `system`, and `provider` are delib
 subjects, because they describe the user's infrastructure as often as they describe the runtime.
 Tests: `test/recording-policy.test.ts` (capture layer and write gate, plus the discrimination list).
 
+### 0.5.1: the classes found by auditing the real store, not the probes
+
+The 0.5.0 rubric was calibrated on hand-written examples. Scoring the actual accumulated store
+(`~/.pi/agent/global-memory`, 8 records) found a whole class the probes missed: six records that were
+accurate, cited, paired, and worthless. All six have since been retired (`/memory retire`, or
+`memory_save` retire), and the capture layer and write gate now refuse their shapes.
+
+| Text or shape | Where it came from | Now handled by |
+| --- | --- | --- |
+| `Could not find edits[N] in <file>. The oldText must match exactly including all whitespace and newlines.` and `Could not find the exact text in <file>` | pi 1.3.0's `edit` tool when the exact text is absent | capture: `EDIT_MISS` (agent slip, retry) |
+| `/usr/bin/bash: -c: line 173: syntax error near unexpected token`, `bash: line 99: warning ...` | the shell rejecting a command string this session composed (heredoc/quoting) | capture: `SHELL_SYNTAX` (agent slip) |
+| `TypeError` out of `node - <<'NODE' ...` / `python -c` | a throwaway script written moments earlier | capture: `SCRATCH_SCRIPT` (scratch code, not the user's codebase) |
+| `head: cannot open 'test/capture.test.ts' for reading: No such file or directory` from a `grep`/`head`/`ls`/`wc` call | a search that missed a guessed path | capture: `SEARCH_MISS` + `SEARCH_START` (exploration misfire) |
+| `[object Object],[object Object]` inside a record's title, cues, and evidence | `primaryArg()` used `String(input.edits)` - an array of objects - so the record's whole content was a type name | capture: structural edit rendering (path + oldText=>newText), plus a write-gate refusal of any draft containing `[object Object]` |
+| "X worked after Y" where Y is a failed search and X is another search | auto-capture pairing two searches in one exploration | write gate: `assessExplorationDiary` |
+
+Two lessons worth keeping:
+
+- **Auto-captured drafts are quote-heavy by construction.** `candidateToDraft` writes
+  `Use "<command>" instead, then confirm the result.` and pastes both calls verbatim. A first attempt
+  at a "mostly a transcript" penalty therefore rejected *every* proven-fix record, including the good
+  `npm ci --registry` one. The veto is now narrow instead: the failure must be a miss, the remedy must
+  itself be a bare search command, and no change may be named - with the template scaffolding stripped
+  first, otherwise the word "instead" in the boilerplate reads as a delta and the veto never fires on
+  the records it exists for.
+- **Score real data with a new rubric before believing the probes.** The probes were all hand-written
+  and all passed; the store contained the counterexamples.
+
+Heuristic nuance to remember: `No such file or directory` is both a real environment fact (a build
+artifact that has not been generated) and an exploration misfire (a path guessed wrong). The rule keys
+on the *call*: a bare search command dropping a miss is a misfire; `make`, `node dist/app.js`, or a
+checked-in script failing stays recordable. A genuinely missing generated file still gets captured,
+and `assessExplorationDiary` keeps it because its remedy names a change (`generate`).
+
 ## Usefulness rubric: the signals, bands, and calibration lessons (0.5.0)
 
 `assessUsefulness` (lib/trust.ts) answers a question reliability cannot: is this worth a slot?

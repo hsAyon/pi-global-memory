@@ -330,6 +330,11 @@ facts about your environment:
 | rate limits, overloaded, service-unavailable, provider transport trouble | it will be different next time, and the record outlives it |
 | model-runner faults, `stop reason`, truncated output, stack traces, `Tool "x" failed` | a bug report for pi or the runner, not knowledge |
 | an `edit` whose `oldText` simply did not match | a slip while editing: re-read and retry, that is not a project rule |
+| a shell command the shell rejected before running (`bash: -c: line 173: syntax error near ...`) | the command string was malformed - a quoting slip, not a fact about your project |
+| an error from a throwaway script written in the same session (`node - <<`, `python -c`) | scratch code failing is a scratch mistake; your checked-in scripts failing is knowledge and is still captured |
+| a search that missed a guessed path (`No such file or directory` from `head`/`grep`/`ls`) | an exploration misfire: the next session will not be looking for that file |
+| an exploration diary: a missed search paired with "use this other search instead" | nothing about the situation changed, so the record teaches nothing |
+| a draft carrying an unrenderable value (`[object Object]`) | what it described did not survive being logged; nothing in it can be re-checked |
 
 
 The gate on the *write* path is separate from the capture classifier, so an agent cannot save one of
@@ -341,7 +346,9 @@ without difficulty. The fault report does not; the fact it implies does.
 
 
 `/memory review` ends with what was ignored and how much, so this filtering is never silent:
-`ignored as agent or runtime noise (never recorded): model-call x1, runtime x2`.
+`ignored as agent or runtime noise (never recorded): model-call x1, runtime x2` and, for drafts an
+agent tried to save, `refused at the write gate (never stored): not useful enough x1, exploration
+diary x1`. `/memory status` carries the same counts.
 
 **Then it has to be worth keeping.** Reliability and usefulness are two separate rubrics, and a draft
 must clear both:
