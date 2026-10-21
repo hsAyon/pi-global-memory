@@ -21,6 +21,64 @@ const WATCHED = new Set(["bash", "powershell", "edit", "write"]);
 
 const ABORT_MARKERS = ["aborted", "cancelled", "canceled", "interrupted", "user requested stop"];
 
+/**
+ * Which failures are worth learning from, and which are only the agent or its runtime
+ * misbehaving. A record about a rejected tool call, an abort, or a context overflow teaches
+ * the next session to route around a transient fault instead of teaching anything about the
+ * user's environment - and it makes the store smell like a crash log. So these never reach
+ * the ledger, let alone the store.
+ *
+ * The harness phrases are not guesses: they are the strings pi 1.3.0 emits
+ * (`Tool "<name>" not found` and `Invalid arguments for tool "<name>": ...` from tool
+ * validation, `Request was aborted`, `Compaction cancelled`, `Compaction produced no summary
+ * ...`, and the context-overflow patterns pi matches provider errors against). Recorded in
+ * docs/NOTES.md with the file they came from.
+ */
+export type NoiseClass = "empty-argument" | "no-detail" | "aborted" | "harness" | "model-call" | "runtime";
+
+const NOISE_PATTERNS: { re: RegExp; cls: NoiseClass; why: string }[] = [
+	{ re: /^tool "[^"]+" not found$/i, cls: "harness", why: "pi had no such tool, so the command never ran" },
+	{ re: /^tool "[^"]+" failed$/i, cls: "harness", why: "the tool implementation raised; that is a pi bug report, not knowledge" },
+	{ re: /invalid arguments for tool/i, cls: "model-call", why: "argument validation rejected the call before it ran" },
+	{
+		re: /(must have required propert|must be (?:a )?(?:string|number|integer|boolean|array|object)|must match|expected (?:a )?(?:string|number|integer)|unterminated json|invalid json|json parse)/i,
+		cls: "model-call",
+		why: "schema or JSON error in the call itself",
+	},
+	{ re: /^request was aborted$/i, cls: "aborted", why: "the run was stopped" },
+	{ re: /(compaction cancelled|compaction produced no summary)/i, cls: "runtime", why: "session management, not the task" },
+	{ re: /(prompt (?:is )?too long|exceeds the context window|maximum context length|context window)/i, cls: "runtime", why: "the model ran out of context" },
+	{ re: /(rate limit reached|too many requests|overloaded_?error|service unavailable)/i, cls: "runtime", why: "provider or transport trouble" },
+	{
+		re: /(tool call (?:was )?(?:rejected|failed)|stack trace|traceback \(most recent call last\)|panic: |segfault|oom killer)/i,
+		cls: "harness",
+		why: "a runtime fault, not a fact about this machine",
+	},
+];
+
+/** An edit whose oldText simply did not match is a model slip, not an environment fact. */
+const EDIT_MISS = /(old ?text|oldtext)[^\n]{0,48}(?:not found|no match|did not match|not present)|(?:no match|did not match)[^\n]{0,32}old ?text/i;
+
+/**
+ * Classify one errored observation. `null` means "this is a real failure in the user's
+ * environment; it may be worth recording". Everything else is dropped with a reason, and the
+ * counts are surfaced in /memory review so the exclusion is visible rather than silent.
+ */
+export function failureNoise(o: ToolObservation): { cls: NoiseClass | null; why: string } {
+	const arg = normWs(primaryArg(o.toolName, o.input));
+	if (arg === "") return { cls: "empty-argument", why: "the call carried no usable argument, so there is nothing to learn" };
+	const text = normWs(o.text ?? "");
+	if (text === "") return { cls: "no-detail", why: "the failure came back with no message" };
+	// Specific phrases first: "Compaction cancelled" is a runtime fault, not merely an abort,
+	// and the class shown to the user should be the useful one.
+	for (const { re, cls, why } of NOISE_PATTERNS) if (re.test(text)) return { cls, why };
+	if (looksAborted(text)) return { cls: "aborted", why: "the run was stopped by the user or the harness" };
+	if ((o.toolName === "edit" || o.toolName === "write") && EDIT_MISS.test(text)) {
+		return { cls: "model-call", why: "the edit simply did not match the file: re-read and retry, not a lesson about the project" };
+	}
+	return { cls: null, why: "" };
+}
+
 export interface ToolObservation {
 	toolName: string;
 	input: Record<string, unknown>;
@@ -179,6 +237,7 @@ interface LedgerEntry {
  */
 export class RunLedger {
 	private entries = new Map<string, LedgerEntry>();
+	private dropped = new Map<NoiseClass, number>();
 	private opts: LedgerOptions;
 
 	constructor(opts: LedgerOptions) {
@@ -187,6 +246,12 @@ export class RunLedger {
 
 	observe(o: ToolObservation): void {
 		if (!WATCHED.has(o.toolName)) return;
+		const noise = failureNoise(o);
+		if (noise.cls) {
+			// Counted, not silent: /memory review shows what was ignored and why.
+			this.dropped.set(noise.cls, (this.dropped.get(noise.cls) ?? 0) + 1);
+			return;
+		}
 		const text = hardenForInjection(String(o.text ?? "")).slice(0, 4000);
 		const fp = callFingerprint(o.toolName, o.input);
 		if (o.isError && !looksAborted(text)) {
@@ -222,6 +287,8 @@ export class RunLedger {
 			// A later success under the same intent, with different arguments, is a
 			// proven fix: the failing call is recorded as avoid, the succeeding one as how.
 			const intent = intentKey(o.toolName, o.input);
+			const okArg = normWs(primaryArg(o.toolName, o.input));
+			if (okArg === "") return; // a success with no argument cannot be anyone's fix
 			for (const [fp, entry] of this.entries.entries()) {
 				if (entry.toolName !== o.toolName || entry.intent !== intent) continue;
 				const sameArgs = normalizeCall(o.toolName, o.input) === fpOfCallKey(o.toolName, o.input);
@@ -279,6 +346,18 @@ export class RunLedger {
 	get size(): number {
 		return this.entries.size;
 	}
+
+	/** Failures ignored as agent/runtime noise, by class. */
+	dropCounts(): Record<string, number> {
+		return Object.fromEntries(this.dropped.entries());
+	}
+
+	/** One line for the user: what was ignored, so the exclusion is never invisible. */
+	dropSummary(): string {
+		const parts = [...this.dropped.entries()].filter(([, n]) => n > 0).map(([cls, n]) => `${cls} x${n}`);
+		if (parts.length === 0) return "no failures were ignored as agent or runtime noise";
+		return `ignored as agent/runtime noise (never recorded): ${parts.join(", ")}`;
+	}
 }
 
 function fpOfCallKey(toolName: string, input: Record<string, unknown>): string {
@@ -320,9 +399,9 @@ export function candidateToDraft(c: Candidate, cwd: string, sessionId: string): 
 	};
 }
 
-/** Mine a whole session branch at once (used by `/memory capture`). */
-export function mineBranch(branch: unknown[], sessionId: string, maxCandidates = 40): { candidates: Candidate[]; signals: Signal[] } {
+/** Mine a whole session branch at once (used by `/memory capture` and `/memory review`). */
+export function mineBranch(branch: unknown[], sessionId: string, maxCandidates = 40): { candidates: Candidate[]; signals: Signal[]; drops: Record<string, number> } {
 	const ledger = new RunLedger({ maxCandidates, sessionId });
 	for (const o of observationsFromBranch(branch)) ledger.observe(o);
-	return { candidates: ledger.candidates(), signals: ledger.signals() };
+	return { candidates: ledger.candidates(), signals: ledger.signals(), drops: ledger.dropCounts() };
 }

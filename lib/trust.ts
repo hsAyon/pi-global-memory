@@ -295,3 +295,177 @@ export function qualityScore(input: { title: string; statement: string; cues: st
 
 	return { score: Math.max(0, Math.min(10, score)), reasons };
 }
+
+/**
+ * Is this draft knowledge, or a fault report about the agent and its runtime?
+ *
+ * The store is meant to hold what was learned about the user's environment: a flag that was
+ * missing, a path that is authoritative, a setting that has to change. It is not a crash log.
+ * Recording "the model runner failed", "compaction error", "pi crashed", or "tool call rejected"
+ * is actively harmful: the next session reads it as guidance and starts routing around a
+ * transient fault, and the store fills with entries nobody can verify.
+ *
+ * So this gate looks for a *runtime subject* stated next to a *failure predicate*. A record that
+ * merely mentions pi, sessions, or compaction without a failure claim passes: "pi keeps sessions
+ * in memory under --no-session, so nothing persists" is a real fact about the tool. The gate
+ * rejects the failure log, never the durable rule it implies, and says so.
+ */
+/**
+ * Is this draft knowledge, or a fault report about the agent and its runtime?
+ *
+ * The store holds what was learned about the user's environment: a missing flag, an authoritative
+ * path, a setting that has to change. It is not a crash log. Recording "the model runner failed",
+ * "compaction error", or "pi crashed" is actively harmful: the next session reads it as guidance
+ * to route around a transient fault, and nobody can re-verify it. So this looks for an
+ * agent-runtime subject stated near a failure predicate. A record that merely mentions pi without
+ * a failure claim passes - "pi keeps sessions in memory under --no-session" is a real fact about
+ * the tool. The gate rejects the fault report, never the durable rule it implies, and says so.
+ */
+const RUNTIME_PHRASES = [
+	"model runner",
+	"model failure",
+	"model failed",
+	"runner failure",
+	"pi crashed",
+	"pi coding agent failed",
+	"harness error",
+	"harness failure",
+	"compaction error",
+	"compaction failed",
+	"session error",
+	"system error",
+	"runtime error",
+	"tool call was rejected",
+	"tool call rejected",
+	"context overflow",
+	"output truncated",
+	"stop reason",
+];
+
+
+/** Subjects that mean "the agent or its runtime", never the user's own infrastructure. */
+const RUNTIME_SUBJECT_TERMS = [
+	"pi",
+	"pi coding agent",
+	"the model",
+	"model runner",
+	"model failure",
+	"the harness",
+	"harness",
+	"agent loop",
+	"the agent",
+	"the runtime",
+	"runtime",
+	"compaction",
+	"context window",
+	"tool call",
+	"tool result",
+	"the assistant",
+];
+
+
+const RUNTIME_FAILURE_TERMS = [
+	"crash",
+	"crashed",
+	"crashes",
+	"crashing",
+	"fail",
+	"failed",
+	"fails",
+	"failing",
+	"failure",
+	"failures",
+	"error",
+	"errors",
+	"errored",
+	"threw",
+	"throw",
+	"throws",
+	"thrown",
+	"throwing",
+	"exception",
+	"exceptions",
+	"stack trace",
+	"traceback",
+	"panic",
+	"panicked",
+	"panics",
+	"segfault",
+	"segmentation fault",
+	"timed out",
+	"timeout",
+	"timeouts",
+	"abort",
+	"aborts",
+	"aborted",
+	"aborting",
+	"kill",
+	"killed",
+	"kills",
+	"oom",
+	"out of memory",
+	"hung",
+	"froze",
+	"frozen",
+	"deadlock",
+	"core dump",
+];
+
+
+export interface RuntimeNoise {
+	noise: boolean;
+	why: string;
+}
+
+
+/**
+ * Words become noise only as whole words, so systemd, session, and provider stay out of the
+ * subject list and a fact about the user's own infrastructure is never mistaken for a fault in
+ * the agent. Matching on padded words rather than regular expressions keeps this readable.
+ */
+function wordPositions(padded: string, term: string): number[] {
+	const needle = " " + term + " ";
+	const at: number[] = [];
+	let from = 0;
+	for (;;) {
+		const i = padded.indexOf(needle, from);
+		if (i < 0) return at;
+		at.push(i);
+		from = i + 1;
+	}
+}
+
+
+/** lowercase, alphanumerics only, single spaces, padded with spaces for whole-word matching. */
+function words(text: string): string {
+	const kept: string[] = [];
+	for (const ch of text.toLowerCase()) {
+		const isWord = (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9");
+		kept.push(isWord ? ch : " ");
+	}
+	return " " + kept.join("").split(" ").filter((p) => p.length > 0).join(" ") + " ";
+}
+
+
+export function assessRuntimeNoise(parts: (string | undefined | null)[]): RuntimeNoise {
+	const raw = parts.filter((p): p is string => typeof p === "string" && p.length > 0).join(" ");
+	const lower = raw.toLowerCase().split(" ").filter((p) => p.length > 0).join(" ");
+	for (const phrase of RUNTIME_PHRASES) {
+		if (lower.includes(phrase)) return { noise: true, why: "it states " + phrase + ", which describes the agent or its runtime rather than the task" };
+	}
+	const text = words(raw);
+	for (const subject of RUNTIME_SUBJECT_TERMS) {
+		const subjectAt = wordPositions(text, subject);
+		if (subjectAt.length === 0) continue;
+		for (const failure of RUNTIME_FAILURE_TERMS) {
+			for (const s of subjectAt) {
+				for (const f of wordPositions(text, failure)) {
+					if (Math.abs(s - f) <= 90) {
+						return { noise: true, why: "it pairs " + subject + " with " + failure + ", i.e. it reports a fault in the model, pi, or the runtime" };
+					}
+				}
+			}
+		}
+	}
+	return { noise: false, why: "" };
+}

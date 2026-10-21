@@ -10,7 +10,7 @@
 import type { GmEntry, GmEvidence, GmKind, GmPrivacyMode, GmRecord, GmScope, GmSketchyMode, GmStatus } from "./types.ts";
 import { EVIDENCE_TYPES, KINDS, STATUSES } from "./types.ts";
 import * as nodePath from "node:path";
-import { assessTrust, maskPrivacy, qualityScore } from "./trust.ts";
+import { assessRuntimeNoise, assessTrust, maskPrivacy, qualityScore } from "./trust.ts";
 import { harden, isSafeRelativePath, sanitizeIdToken } from "./sanitize.ts";
 import {
 	clamp,
@@ -407,6 +407,13 @@ export function normalizeDraft(draft: Draft, opts: NormalizeOptions): Validation
 	let fNotes = notes;
 	const trust = assessTrust({ title: fTitle, statement: fStatement, why: fWhy, how: fHow, avoid: fAvoid, notes: fNotes }, opts.privacy, opts.sketchy);
 	for (const b of trust.block) problems.push(b);
+	// Knowledge, not a crash log: a draft about the model, pi, or the runtime failing is
+	// refused, because such a record teaches the next session to work around a transient
+	// fault and nobody can re-verify it. The durable rule it implies is still welcome.
+	const runtime = assessRuntimeNoise([fTitle, fStatement, fWhy, fHow, fAvoid, fNotes]);
+	if (runtime.noise) {
+		problems.push(`refused as an agent/runtime fault report: ${runtime.why}. Record the durable rule instead - the flag, path, setting, or command that actually explains the behaviour, with the evidence you saw. If the fault is a real bug in pi or the model runner, report it upstream rather than storing it.`);
+	}
 	if (opts.privacy === "standard") {
 		const masked = maskPrivacy([fTitle, fStatement, fWhy, fHow, fAvoid, fNotes].join("\u0001"));
 		if (masked.changed.length > 0) {

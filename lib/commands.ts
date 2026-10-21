@@ -228,12 +228,17 @@ export async function handleMemoryCommand(rawArgs: string, ctx: ExtensionCommand
 		case "review": {
 			const mined = mineBranch(ctx.sessionManager.getBranch(), info.sessionId);
 			const signals = service.store.listSignals();
+			const drops = Object.entries(mined.drops ?? {}).filter(([, n]) => n > 0);
+			const dropLine = drops.length
+				? `ignored as agent or runtime noise (never recorded): ${drops.map(([kind, n]) => `${kind} x${n}`).join(", ")}`
+				: "nothing was ignored as agent or runtime noise in this session";
 			const lines = [
 				`this session: ${mined.candidates.length} candidate(s) from failed tool calls`,
 				...mined.candidates
 					.slice(0, 25)
 					.map((c) => `- [${c.provenFix ? "proven fix" : "unresolved"}] ${c.category} ${c.toolName}: "${truncate(c.failing, 90)}" failed ${c.failures}x${c.succeeding ? ` -> "${truncate(c.succeeding, 90)}" worked` : ""}`),
 				"",
+				dropLine,
 				`pending signal ledger on disk: ${signals.length}`,
 				...signals.slice(0, 15).map((s) => `- ${s.fingerprint} ${s.summary} x${s.count}${s.resolved ? " (resolved)" : ""}`),
 				"",
