@@ -10,11 +10,10 @@
  * confirmations plus a typed token, and always writes a container backup first.
  */
 
-import * as crypto from "node:crypto";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { GmRecord } from "./types.ts";
 import type { MemoryService, RunInfo } from "./service.ts";
-import { displayPath, nowIso } from "./util.ts";
+import { displayPath, nowIso, randomToken } from "./util.ts";
 import { renderRecord } from "./search.ts";
 import { CONTAINER_EXT } from "./container.ts";
 
@@ -193,7 +192,7 @@ export function stagedDeleteAll(root: string): PendingDoom | undefined {
 
 export function stageDeleteAll(service: MemoryService): PendingDoom {
 	const counts = service.store.counts();
-	const token = crypto.randomBytes(3).toString("hex").toUpperCase();
+	const token = randomToken();
 	const staged: PendingDoom = {
 		token,
 		issuedAt: nowIso(),
@@ -370,7 +369,7 @@ async function recordMenu(ctx: ExtensionCommandContext, service: MemoryService, 
 }
 
 /** Path helper so commands and browse agree on where exports/backups land. */
-export function containerPath(service: MemoryService, kind: string, passphrase: boolean): string {
+export function containerPath(kind: string, passphrase: boolean): string {
 	const stamp = nowIso().replace(/[:.]/g, "-");
 	return `${kind}-${stamp}${CONTAINER_EXT}${passphrase ? ".enc" : ""}`;
 }
