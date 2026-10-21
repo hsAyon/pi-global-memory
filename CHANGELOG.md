@@ -39,7 +39,7 @@ First working release. Verified against pi 1.3.0.
 - **Auto-capture**: `autoCapture: "fixes"` mines failed-call -> proven-fix chains
   at `agent_end`; candidates are flagged `auto`, marked tentative, and listed by
   `/memory review` / `/memory accept`.
-- **Tests**: 84 tests (store, gates, retrieval, prompt budgets, self-heal, capture,
+- **Tests**: 85 tests (store, gates, retrieval, prompt budgets, self-heal, capture,
   config, extension wiring against a mock pi API, offline/network invariants) plus
   `scripts/load-check.mjs`, which loads the extension through pi's real loader and
   asserts registrations and schema validation.

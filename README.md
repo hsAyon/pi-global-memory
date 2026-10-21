@@ -245,7 +245,7 @@ Git-friendly store: keep `gitAutoCommit: false` and commit the store yourself fr
 
 ```bash
 npm install       # only for development: typebox as a devDependency so tests can run outside pi
-npm test          # 84 tests: store, gates, retrieval, prompt budgets, self-heal, capture, config, wiring, offline invariants
+npm test          # 85 tests: store, gates, retrieval, prompt budgets, self-heal, capture, config, wiring, offline invariants
 npm run check     # loads index.ts through pi's real extension host; asserts registrations + schema validation
 npm run verify    # both
 ```

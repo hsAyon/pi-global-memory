@@ -139,9 +139,11 @@ Nothing under `lib/` imports pi except `lib/schemas.ts` (typebox) and the type-o
 | Self-heal | `test/heal.test.ts` | the four-way classification table, dispute/verify state, audit findings |
 | Capture | `test/capture.test.ts` | failed→fixed chains mined from a branch, no secrets captured |
 | Config | `test/config.test.ts` | precedence, strict validation, private-by-default, budgets small enough to be worth it |
+| Module load | `test/imports.test.ts` | every module evaluates under node type stripping (a brace slip otherwise only surfaces inside pi) |
 | Wiring | `test/extension.test.ts` | index.ts against a mock `ExtensionAPI`: registrations, toggles, ephemeral session, untrusted project, self-heal flush, auto-capture, `--no-global-memory` |
 | Invariants | `test/offline.test.ts` | no network APIs anywhere; only the allow-listed spawn helper; git hardening strings present; no networked git subcommands |
 | Real host | `scripts/load-check.mjs` | pi's own jiti loader + registration bookkeeping accept the extension; schemas compile and reject invented actions |
+| Runtime self-check | `/memory selftest` | in a scratch store: traversal refused, gates accept a clean record, read/search/retire/delete round-trip, posture is private-by-default |
 
 `npm run verify` runs the suite and the load check. The load check exists because a mock API can drift from pi's; it uses `discoverAndLoadExtensions` from the installed pi package, starts no agent loop, and performs no network I/O.
 
