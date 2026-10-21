@@ -32,6 +32,7 @@ export interface ListRow {
 	verified: number;
 	ageDays: number;
 	updated: string;
+	lowValue: boolean;
 	disputed: boolean;
 }
 
@@ -89,6 +90,7 @@ export function listRows(
 		ageDays: ageDays(r),
 		updated: (r.stats.updated || r.stats.created || "").slice(0, 10),
 		disputed: r.flags.includes("disputed"),
+		lowValue: r.flags.includes("low-value"),
 	}));
 	return { rows, total };
 }
@@ -139,6 +141,7 @@ export function renderListing(
 			const marks = [
 				r.disputed ? "DISPUTED" : "",
 				r.confidence <= 1 ? "tentative" : "",
+				r.lowValue ? "low-value" : "",
 				r.verified ? `verified x${r.verified}` : "",
 				r.status !== "active" ? r.status : "",
 				r.flags.includes("auto") ? "auto" : "",

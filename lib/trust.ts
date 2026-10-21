@@ -469,3 +469,182 @@ export function assessRuntimeNoise(parts: (string | undefined | null)[]): Runtim
 	}
 	return { noise: false, why: "" };
 }
+
+/**
+ * Usefulness: does this deserve one of the store's slots?
+ *
+ * Quality (the other rubric) asks whether a record is well-formed and reliable. This asks a
+ * different question: will it change what a future session does? Plenty of records are accurate,
+ * well-cited, and worthless - textbook facts the model already knows, vague advice ("be careful with
+ * the config"), session trivia ("this session saw 3 errors"), or claims about paths that will not
+ * exist tomorrow. Every such record makes retrieval slower and the catalog noisier, which is the
+ * resource this package exists to protect. So a draft is scored for usefulness at write time and
+ * discarded below the floor, rather than stored and pruned later.
+ *
+ * Scoring is deliberately transparent (a reason per adjustment) because the refusal has to teach the
+ * writer what would make a record worth keeping.
+ */
+const USEFUL_COMMANDS = [
+	"npm", "npx", "pnpm", "yarn", "node", "bun", "git", "docker", "docker-compose", "compose", "kubectl", "helm",
+	"pip", "pip3", "python", "python3", "poetry", "cargo", "rustc", "go", "make", "cmake", "gcc", "clang", "tsc",
+	"eslint", "prettier", "jest", "vitest", "pytest", "curl", "wget", "apt", "apt-get", "brew", "systemctl",
+	"journalctl", "ssh", "scp", "rsync", "tar", "gzip", "grep", "rg", "sed", "awk", "jq", "yq", "sqlite3", "psql",
+	"aws", "gcloud", "az", "terraform", "pi", "powershell", "pwsh", "bash", "zsh", "winget", "choco", "reg",
+	"sc.exe", "netsh", "taskkill", "wsl", "firewall-cmd", "openclaw", "ketch",
+];
+
+const USEFUL_HEDGES = ["maybe", "might", "possibly", "probably", "appears", "seems", "apparently", "consider", "perhaps", "usually", "generally", "typically", "somewhat", "sort", "kind"];
+const USEFUL_VAGUE = ["be careful", "carefully", "double check", "double-check", "make sure", "verify things", "check things", "try to", "should probably", "it depends", "best practice", "as needed", "properly", "correctly", "appropriately"];
+const USEFUL_META = ["this session", "the agent", "the model", "i think", "i believe", "we saw", "our conversation", "earlier in", "as an assistant", "my job"];
+const USEFUL_EPHEMERAL = ["/tmp", "/temp", "tmpdir", "appdata", "session:", "sessionid", "today", "yesterday", "tonight", "now running", "current branch", "this worktree", "scratch"];
+const USEFUL_SURPRISE = ["instead", "not", "only", "must", "requires", "cannot", "cant", "fails", "fails when", "does not", "doesn", "refused", "silently", "ignores", "overrides", "defaults to", "off by default", "on by default", "unlike", "whereas", "because", "otherwise", "surprisingly", "gotcha", "quirk", "flag", "option", "setting", "env", "environment variable"];
+
+export interface Usefulness {
+	score: number;
+	reasons: string[];
+}
+
+export type UsefulnessVerdict = "discard" | "flag" | "store";
+
+export function assessUsefulness(input: {
+	title: string;
+	statement: string;
+	why: string;
+	how: string;
+	avoid: string;
+	notes: string;
+	cues: string[];
+	tags: string[];
+	category: string;
+	kind: string;
+	evidenceTypes: string[];
+}): Usefulness {
+	const body = [input.title, input.statement, input.why, input.how, input.avoid, input.notes].filter((p) => typeof p === "string" && p.length > 0).join(" ");
+	const lower = body.toLowerCase();
+	const words = " " + lower.split(" ").filter((p) => p.length > 0).join(" ") + " ";
+	const reasons: string[] = [];
+	let score = 5;
+
+	// Concreteness: a memory that names the thing is actionable.
+	let concrete = 0;
+	if (/(^|[^-])--[a-z]/.test(lower) || /(^|[^a-z0-9])-{1,2}[a-z][a-z0-9-]{1,}/.test(lower)) {
+		concrete++;
+		reasons.push("names a flag or option (+1)");
+	}
+	if (/[a-z0-9_-]+\.(ts|js|cjs|mjs|json|md|py|toml|yaml|yml|lock|sh|ps1|bat|cfg|conf|ini|env|exe|sql)($|[^a-z])/.test(lower) || lower.includes("/") || lower.includes("\\")) {
+		concrete++;
+		reasons.push("names a file or path (+1)");
+	}
+	if (/[A-Z][A-Z0-9_]{2,}/.test(body)) {
+		concrete++;
+		reasons.push("names an environment variable or constant (+1)");
+	}
+	if (/[a-z][A-Za-z0-9]*\.[a-z][A-Za-z0-9]+/.test(lower)) {
+		concrete++;
+		reasons.push("names a config key or dotted setting (+1)");
+	}
+	const commandMention = USEFUL_COMMANDS.some((c) => words.includes(" " + c + " ") || words.includes(" " + c + ":"));
+	if (commandMention) {
+		concrete++;
+		reasons.push("names a real command (+1)");
+	}
+	if (concrete > 3) {
+		score -= concrete - 3;
+		reasons.push("concreteness capped at +3");
+		concrete = 3;
+	}
+	score += concrete;
+	if (concrete === 0) {
+		score -= 3;
+		reasons.push("names nothing concrete: no flag, path, command, key, or error text (-3) - it reads like a generality the model already knows");
+	}
+
+	// Was a cost paid, or is something counter-intuitive stated?
+	let cost = 0;
+	if (input.how.length > 0 && input.avoid.length > 0) {
+		cost++;
+		reasons.push("records both the mistake and the fix (+1)");
+	}
+	if (USEFUL_SURPRISE.some((p) => words.includes(" " + p) || lower.includes(" " + p + " "))) {
+		cost++;
+		reasons.push("states a qualifier or contrast, not just a definition (+1)");
+	}
+	if (input.evidenceTypes.includes("command") || input.evidenceTypes.includes("file") || input.evidenceTypes.includes("artifact")) {
+		cost++;
+		reasons.push("evidence is a command, file, or artifact that can be re-checked (+1)");
+	}
+	if (["mistake", "research", "environment", "workflow", "pattern"].includes(input.kind) && /(observ|verif|test|reproduc|confirm|ran |tried )/.test(lower)) {
+		cost++;
+		reasons.push("says what was observed or tested (+1)");
+	}
+	if (cost === 0) {
+		score -= 3;
+		reasons.push("states no cost paid, contrast, or caveat: it can be looked up anywhere (-3)");
+		const definitional = ["installs", "used to", "used for", "is a", "are a", "means", "refer to", "refers to", "allows", "enables", "provides", "contains", "consists", "defines", "sets up", "configures", "is an"].filter((p) => words.includes(" " + p));
+		if (definitional.length > 0) {
+			score -= 2;
+			reasons.push(`reads like a dictionary definition of a tool (${definitional.slice(0, 3).join(", ")}) rather than something learned (-2)`);
+		}
+	}
+	if (cost > 3) {
+		score -= cost - 3;
+		reasons.push("cost/caveat bonus capped at +3");
+		cost = 3;
+	}
+	score += cost;
+
+	// Will it be found when it matters?
+	if (input.cues.length >= 1) {
+		score += 1;
+		reasons.push("carries retrieval cues (+1)");
+	} else {
+		reasons.push("no retrieval cues: future searches may miss it (0)");
+	}
+	if (input.category === "misc" || input.category === "tools" || input.category === "repo") {
+		score -= 1;
+		reasons.push(`category "${input.category}" is a dumping ground: name the tool or subject instead (-1)`);
+	}
+
+	// Discard-worthy patterns.
+	const hedges = USEFUL_HEDGES.filter((p) => words.includes(" " + p + " "));
+	if (hedges.length > 0) {
+		score -= Math.min(3, hedges.length);
+		reasons.push(`hedged wording (${hedges.slice(0, 4).join(", ")}): a memory is a claim, not a hypothesis (-${Math.min(3, hedges.length)})`);
+	}
+	const vague = USEFUL_VAGUE.filter((p) => lower.includes(p));
+	if (vague.length > 0) {
+		score -= 2;
+		reasons.push(`vacuous advice (${vague.slice(0, 3).join(", ")}): it cannot change what a session does (-2)`);
+	}
+	const meta = USEFUL_META.filter((p) => lower.includes(p));
+	if (meta.length > 0) {
+		score -= 2;
+		reasons.push(`about the conversation itself (${meta.slice(0, 3).join(", ")}), not about the task (-2)`);
+	}
+	const ephemeral = USEFUL_EPHEMERAL.filter((p) => lower.includes(p));
+	if (ephemeral.length > 0) {
+		score -= 2;
+		reasons.push(`references throwaway state (${ephemeral.slice(0, 3).join(", ")}): it will not be true tomorrow (-2)`);
+	}
+	if (/[0-9]+ (error|errors|failure|failures|warning|warnings|times|attempts)/.test(lower) && concrete <= 1) {
+		score -= 2;
+		reasons.push("counts events without naming a cause or a fix (-2)");
+	}
+	if (input.title.length + input.statement.length < 60) {
+		score -= 1;
+		reasons.push("title and statement together are too thin to act on (-1)");
+	}
+
+	return { score: Math.max(0, Math.min(10, score)), reasons };
+}
+
+/**
+ * Three verdicts instead of a binary gate: a draft under the floor is discarded; one barely over it
+ * is stored but flagged so the audit trail can retire it if it never earns a lookup; anything
+ * comfortably over it is stored normally.
+ */
+export function usefulnessVerdict(score: number, min: number): UsefulnessVerdict {
+	if (score < min) return "discard";
+	if (score < min + 3) return "flag";
+	return "store";
+}

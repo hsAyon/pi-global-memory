@@ -10,7 +10,9 @@ const PI_SECTION_NAME = /^[a-z][a-z0-9_-]*$/;
 
 function fresh(name: string, over = {}) {
 	const dir = tempDir(`gm-${name}-`);
-	const b: ServiceBundle & { dir: string } = { ...makeService(dir, over), dir };
+	// These tests exercise retrieval ranking and prompt budgets with synthetic records; the
+	// usefulness gate is asserted in test/usefulness.test.ts, so it is switched off here.
+	const b: ServiceBundle & { dir: string } = { ...makeService(dir, { minUsefulness: 0, ...over }), dir };
 	return b;
 }
 

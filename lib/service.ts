@@ -49,6 +49,8 @@ export class MemoryService {
 	private indexBuiltAt = 0;
 	private indexSize = -1;
 	writes = 0;
+	/** Drafts refused because they were not worth a slot; shown in /memory status. */
+	usefulnessDiscards = 0;
 	overrides: { use?: boolean; record?: boolean } = {};
 	private pendingVerify = new Set<string>();
 	private pendingDispute = new Set<string>();
@@ -110,6 +112,7 @@ export class MemoryService {
 	/** Reset per-session state (new session, toggles not inherited). */
 	beginSession(): void {
 		this.writes = 0;
+		this.usefulnessDiscards = 0;
 		this.overrides = {};
 		this.pendingVerify.clear();
 		this.pendingDispute.clear();
@@ -267,10 +270,15 @@ export class MemoryService {
 			privacy: this.cfg.privacy,
 			sketchy: this.cfg.sketchy,
 			minQuality: this.cfg.minQuality,
+			// Auto-captured drafts were never reviewed by a human, so they face a higher bar.
+			minUsefulness: this.cfg.minUsefulness + ((opts.autoFlags?.length ?? 0) > 0 ? 1 : 0),
 			cwd: info.cwd,
 			existingIds: this.store.idSet(),
 		});
-		if (!res.ok || !res.record) return res;
+		if (!res.ok || !res.record) {
+			if (res.problems.some((p) => p.startsWith("discarded as not useful enough"))) this.usefulnessDiscards++;
+			return res;
+		}
 		for (const f of opts.autoFlags ?? []) if (!res.record.flags.includes(f)) res.record.flags.push(f);
 
 		const twin = this.findTwin(res.record);
@@ -309,7 +317,7 @@ export class MemoryService {
 	async update(id: string, patch: Draft, info: RunInfo): Promise<ValidationResult & { id?: string }> {
 		await this.refresh();
 		const existing = this.store.byId(id);
-		if (!existing) return { ok: false, problems: [`no record ${id}`], redacted: [], suspect: false, notes: [], quality: 0, qualityReasons: [] };
+		if (!existing) return { ok: false, problems: [`no record ${id}`], redacted: [], suspect: false, notes: [], quality: 0, qualityReasons: [], usefulness: 0, usefulnessReasons: [] };
 		const merged: Draft = {
 			id: existing.id,
 			kind: patch.kind ?? existing.kind,
@@ -336,6 +344,7 @@ export class MemoryService {
 			privacy: this.cfg.privacy,
 			sketchy: this.cfg.sketchy,
 			minQuality: this.cfg.minQuality,
+			minUsefulness: this.cfg.minUsefulness,
 			cwd: info.cwd,
 			existingIds: this.store.idSet(),
 			selfId: existing.id,
@@ -485,7 +494,8 @@ export class MemoryService {
 		const c = this.store.counts();
 		const p = this.posture(info);
 		const mode = !this.cfg.enabled ? "off" : p.use ? (p.record ? "use+record" : "use-only") : "read-blocked";
-		return `GM ${mode}: ${c.active} records (${c.categories ? Object.keys(c.categories).length : 0} categories), ${c.retired} retired, ${c.invalid} unreadable${c.invalid ? "!" : ""}`;
+		const discarded = this.usefulnessDiscards > 0 ? `; discarded ${this.usefulnessDiscards} draft(s) as not worth keeping` : "";
+		return `GM ${mode}: ${c.active} records (${c.categories ? Object.keys(c.categories).length : 0} categories), ${c.retired} retired, ${c.invalid} unreadable${c.invalid ? "!" : ""}${discarded}`;
 	}
 
 	/**

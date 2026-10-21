@@ -193,6 +193,15 @@ export function auditStore(records: GmRecord[], cfg: GmConfig, cwd: string): Fin
 				action: "redact",
 			});
 		}
+		if (r.flags.includes("low-value") && r.stats.hits === 0 && ageDays > cfg.tentativeTtlDays) {
+			findings.push({
+				severity: "low",
+				id: r.id,
+				issue: "flagged-low-value",
+				detail: `stored near the usefulness floor and never looked up in ${Math.round(ageDays)}d -> retire; a record nobody retrieves is not earning its catalog line`,
+				action: "retire",
+			});
+		}
 		if (r.stats.hits === 0 && ageDays > 90 && valueScore(r, now) < 2.5) {
 			findings.push({
 				severity: "low",

@@ -153,14 +153,24 @@ describe("write gates: evidence, privacy, reliability, duplicates", () => {
 		}
 	});
 
-	test("minQuality 0 is the explicit allow-anyway switch", async () => {
-		const { service, info, dir } = fresh("quality-off", { minQuality: 0, requireEvidence: false, privacy: "off", sketchy: "off" });
+	test("minQuality 0 alone will not store a useless record; both switches together do", async () => {
+		const thin = { kind: "fact", category: "misc", title: "note", statement: "be careful with builds" };
+		const one = fresh("quality-off", { minQuality: 0, requireEvidence: false, privacy: "off", sketchy: "off" });
 		try {
-			const res = await service.add({ kind: "fact", category: "misc", title: "note", statement: "be careful with builds" }, info);
-			assert.ok(res.ok, res.problems.join("; "));
-			assert.ok(res.quality < 3, `expected a low score, got ${res.quality}`);
+			const res = await one.service.add(thin, one.info);
+			assert.ok(!res.ok, "relaxing reliability must not become a licence to store clutter");
+			assert.match(res.problems.join(" "), /not useful enough/);
 		} finally {
-			cleanup(dir);
+			cleanup(one.dir);
+		}
+		const both = fresh("both-off", { minQuality: 0, minUsefulness: 0, requireEvidence: false, privacy: "off", sketchy: "off" });
+		try {
+			const res = await both.service.add(thin, both.info);
+			assert.ok(res.ok, res.problems.join("; "));
+			assert.ok(res.quality < 3, `expected a low reliability score, got ${res.quality}`);
+			assert.ok(res.usefulness < 3, `expected a low usefulness score, got ${res.usefulness}`);
+		} finally {
+			cleanup(both.dir);
 		}
 	});
 

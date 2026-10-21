@@ -10,7 +10,7 @@
 import type { GmEntry, GmEvidence, GmKind, GmPrivacyMode, GmRecord, GmScope, GmSketchyMode, GmStatus } from "./types.ts";
 import { EVIDENCE_TYPES, KINDS, STATUSES } from "./types.ts";
 import * as nodePath from "node:path";
-import { assessRuntimeNoise, assessTrust, maskPrivacy, qualityScore } from "./trust.ts";
+import { assessRuntimeNoise, assessTrust, assessUsefulness, maskPrivacy, qualityScore, usefulnessVerdict } from "./trust.ts";
 import { harden, isSafeRelativePath, sanitizeIdToken } from "./sanitize.ts";
 import {
 	clamp,
@@ -81,6 +81,9 @@ export interface ValidationResult {
 	notes: string[];
 	quality: number;
 	qualityReasons: string[];
+	/** "is it worth keeping" rubric, decided at write time. */
+	usefulness: number;
+	usefulnessReasons: string[];
 }
 
 function newId(title: string, kind: string): string {
@@ -287,6 +290,8 @@ export interface NormalizeOptions {
 	privacy: GmPrivacyMode;
 	sketchy: GmSketchyMode;
 	minQuality: number;
+	/** Usefulness floor: a draft scoring below this is discarded, not stored. */
+	minUsefulness: number;
 	cwd: string;
 	existingIds: Set<string>;
 	/** Id being updated (its own file is allowed). */
@@ -451,6 +456,33 @@ export function normalizeDraft(draft: Draft, opts: NormalizeOptions): Validation
 		);
 	}
 
+	// Quality asks "is this well-formed and reliable?" Usefulness asks the question that decides
+	// whether the store should carry it at all: will it change what a future session does? An
+	// accurate, well-cited generality is still clutter, and clutter is the cost this package exists
+	// to avoid, so a thin draft is discarded here rather than stored and pruned later.
+	const usefulness = assessUsefulness({
+		title: fTitle,
+		statement: fStatement,
+		why: fWhy,
+		how: fHow,
+		avoid: fAvoid,
+		notes: fNotes,
+		cues,
+		tags,
+		category,
+		kind: kind ?? "fact",
+		evidenceTypes: evidence.map((e) => e.type),
+	});
+	const verdict = usefulnessVerdict(usefulness.score, opts.minUsefulness);
+	if (verdict === "discard") {
+		problems.push(
+			`discarded as not useful enough to keep: score ${usefulness.score}/10 is below minUsefulness ${opts.minUsefulness}. ${usefulness.reasons.join("; ")}. Discarding is the right outcome for textbook facts, vague advice, and session trivia - if the record really is worth a slot, name the flag/path/command or error text it teaches, and what was learned the hard way.`,
+		);
+	} else if (verdict === "flag") {
+		if (!flagsOut.includes("low-value")) flagsOut.push("low-value");
+		notesOut.push(`stored but flagged low-value (usefulness ${usefulness.score}/10): ${usefulness.reasons[usefulness.reasons.length - 1] ?? ""}; /memory audit retires flagged records that never earn a lookup`);
+	}
+
 	let id = sanitizeIdToken(String(draft.id ?? ""), 64);
 	if (id && !id.startsWith("gm-")) id = `gm-${id}`.slice(0, 64);
 	if (id && opts.existingIds.has(id) && id !== opts.selfId) problems.push(`id ${id} already exists`);
@@ -491,6 +523,8 @@ export function normalizeDraft(draft: Draft, opts: NormalizeOptions): Validation
 		notes: notesOut,
 		quality: quality.score,
 		qualityReasons: quality.reasons,
+		usefulness: usefulness.score,
+		usefulnessReasons: usefulness.reasons,
 	};
 }
 

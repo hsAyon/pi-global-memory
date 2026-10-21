@@ -183,6 +183,15 @@ export const CONFIG_SPEC: ConfigSpec[] = [
 		effect: "0 accepts thin records; the rubric rewards a findable title, a concise condition-specific statement, cues, and cited evidence. Refusals print the rubric so the model can fix the draft.",
 	},
 	{
+		key: "minUsefulness",
+		group: "accuracy",
+		type: "int",
+		range: [0, 10],
+		description: "Usefulness score (0-10 rubric) a draft must reach to be kept at all - a separate question from reliability.",
+		effect: "The second question a draft has to answer: will this change what a future session does? Points are added for naming a flag, path, command, config key, or error text; for recording both a mistake and its fix; for evidence that can be re-checked; and for retrieval cues. Points are taken for hedging, vague advice (be careful, double check), counting events with no cause, writing about the conversation itself, throwaway paths and session ids, dumping-ground categories, and textbook definitions of well-known tools. Below the floor the draft is discarded with the reason printed; just above it the record is stored but flagged low-value, and /memory audit retires flagged records that never earn a lookup. Auto-captured drafts face the floor + 1. 0 disables the gate, which is not recommended: accurate uselessness still costs retrieval quality.",
+		sensitive: true,
+	},
+	{
 		key: "selfHeal",
 		group: "accuracy",
 		type: "enum",

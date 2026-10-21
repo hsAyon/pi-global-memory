@@ -166,6 +166,8 @@ export interface GmConfig {
 	sketchy: GmSketchyMode;
 	/** Below this explainable 0..10 quality score a write is refused. */
 	minQuality: number;
+	/** Usefulness floor for keeping a record at all (0-10). */
+	minUsefulness: number;
 	/** Auto-disable recording in ephemeral sessions (pi --no-session). */
 	respectSessionPrivacy: boolean;
 	/** Refuse writes while project trust is denied. */
@@ -214,6 +216,7 @@ export const CONFIG_DEFAULTS: GmConfig = {
 	privacy: "strict",
 	sketchy: "block",
 	minQuality: 3,
+	minUsefulness: 4,
 	respectSessionPrivacy: true,
 	requireProjectTrustForWrites: true,
 	toggleShortcut: "",
