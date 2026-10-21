@@ -13,7 +13,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { GmConfig, GmRecord, GmStatus, LoadedStore, Signal } from "./types.ts";
-import { displayPath, ensureDir, exists, hash32, isDirectory, listFiles, nowIso, readTextLimited, relPath, run, tightenMode, writeFileAtomic } from "./util.ts";
+import { displayPath, ensureDir, exists, isDirectory, listFiles, nowIso, readTextLimited, relPath, run, tightenMode, writeFileAtomic } from "./util.ts";
 import { parseRecordFile, recordFileName, recordToEntry, serializeRecord, similarity as similarityOf, valueScore } from "./record.ts";
 import { STORE_FORMAT } from "./version.ts";
 
@@ -301,10 +301,8 @@ export class MemoryStore {
 				}
 			}
 			writeFileAtomic(target, serializeRecord(record));
-			const loaded = await this.load(true);
-			const idx = this.indexPayload(loaded.records);
-			writeFileAtomic(this.safeJoin("index.json"), idx.json);
-			writeFileAtomic(this.safeJoin("INDEX.md"), idx.md);
+			record.file = target;
+			await this.writeIndexes([record]);
 			await this.maybeGitCommit(note);
 			return { file: displayPath(target), created };
 		});
@@ -313,6 +311,7 @@ export class MemoryStore {
 	async setStatus(ids: string[], status: GmStatus, note: string): Promise<{ changed: string[]; missing: string[] }> {
 		return await this.withLock(async () => {
 			const changed: string[] = [];
+			const changedRecords: GmRecord[] = [];
 			const missing: string[] = [];
 			for (const id of ids) {
 				const rec = this.byId(id);
@@ -332,13 +331,12 @@ export class MemoryStore {
 					}
 				}
 				writeFileAtomic(target, serializeRecord(rec));
+				rec.file = target;
+				changedRecords.push(rec);
 				changed.push(rec.id);
 			}
 			if (changed.length > 0) {
-				const loaded = await this.load(true);
-				const idx = this.indexPayload(loaded.records);
-				writeFileAtomic(this.safeJoin("index.json"), idx.json);
-				writeFileAtomic(this.safeJoin("INDEX.md"), idx.md);
+				await this.writeIndexes(changedRecords);
 				await this.maybeGitCommit(note);
 			}
 			return { changed, missing };
@@ -363,10 +361,7 @@ export class MemoryStore {
 				deleted.push(rec.id);
 			}
 			if (deleted.length > 0) {
-				const loaded = await this.load(true);
-				const idx = this.indexPayload(loaded.records);
-				writeFileAtomic(this.safeJoin("index.json"), idx.json);
-				writeFileAtomic(this.safeJoin("INDEX.md"), idx.md);
+				await this.writeIndexes([], deleted);
 				await this.maybeGitCommit(note);
 			}
 			return { deleted, missing };
@@ -415,10 +410,10 @@ export class MemoryStore {
 			} catch {
 				/* signals are a convenience */
 			}
-			const loaded = await this.load(true);
-			const idx = this.indexPayload(loaded.records);
-			writeFileAtomic(this.safeJoin("index.json"), idx.json);
-			writeFileAtomic(this.safeJoin("INDEX.md"), idx.md);
+			// The cache cannot be repaired record by record here, so drop it and let the
+			// index be rebuilt from disk: wipeAll is rare and correctness beats speed.
+			this.invalidate();
+			await this.writeIndexes([]);
 			await this.maybeGitCommit(note);
 			return { files: removed.length, categories };
 		});
@@ -477,6 +472,38 @@ export class MemoryStore {
 			}
 		}
 		return { active, superseded, retired, invalid: this.cache?.invalid.length ?? 0, categories, bytes, files };
+	}
+
+	/**
+	 * Keep the read cache aligned with a mutation instead of re-reading and re-parsing every
+	 * record file. Every write path used to rescan the whole store, which made each write O(n)
+	 * with parsing: measured ~70 ms per write at 200 records on this machine, mostly rescanning.
+	 * The cache entries must carry the same absolute `file` a reload would produce, because
+	 * index.json records that path - test/store.test.ts compares the incremental result against a
+	 * forced reload, which is what keeps this honest.
+	 */
+	private syncCache(written: GmRecord[], removedIds: string[] = []): GmRecord[] | undefined {
+		if (!this.cache) return undefined;
+		const list = this.cache.records;
+		for (const id of removedIds) {
+			const at = list.findIndex((r) => r.id === id);
+			if (at >= 0) list.splice(at, 1);
+		}
+		for (const rec of written) {
+			const at = list.findIndex((r) => r.id === rec.id);
+			if (at >= 0) list[at] = rec;
+			else list.push(rec);
+		}
+		this.cache.at = Date.now();
+		return list;
+	}
+
+	/** Rewrite the derived indexes from the cache when it is current, otherwise from disk. */
+	private async writeIndexes(written: GmRecord[], removedIds: string[] = []): Promise<void> {
+		const records = this.syncCache(written, removedIds) ?? (await this.load(true)).records;
+		const idx = this.indexPayload(records);
+		writeFileAtomic(this.safeJoin("index.json"), idx.json);
+		writeFileAtomic(this.safeJoin("INDEX.md"), idx.md);
 	}
 
 	/** Deterministic derived indexes. index.json for machines, INDEX.md for humans. */
@@ -804,6 +831,3 @@ export class MemoryStore {
 	}
 }
 
-export function storeRootToken(root: string): string {
-	return hash32(displayPath(path.resolve(root)));
-}

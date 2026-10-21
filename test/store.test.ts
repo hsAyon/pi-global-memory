@@ -185,6 +185,38 @@ describe("store: confinement, atomicity, lifecycle", () => {
 		}
 	});
 
+	test("derived indexes match a full rescan after incremental writes", async () => {
+		const { service, store, info, dir } = fresh("index-parity");
+		const readIndex = () => fs.readFileSync(path.join(dir, "index.json"), "utf8").replace(/"generatedAt": "[^"]+",?/, "");
+		const readMd = () => fs.readFileSync(path.join(dir, "INDEX.md"), "utf8").replace(/^Generated .*$/m, "");
+		try {
+			for (const [category, statement] of [
+				["docker", "docker system prune clears the layer cache on this host"],
+				["node", "node --test only matches files named .test.ts"],
+				["git", "git rebase -i needs GIT_SEQUENCE_EDITOR set"],
+			] as [string, string][]) {
+				const res = await service.add({ ...GOOD_DRAFT, category, statement, title: statement.slice(0, 40) }, info, { allowPrivate: true });
+				assert.ok(res.ok, res.problems.join("; "));
+			}
+			// A retire moves the file between directories, which is where an incremental cache is
+			// most likely to lie about the path, so do it before comparing.
+			const list = store.cacheRecords();
+			assert.equal(list.length, 3);
+			await store.setStatus([list[1].id], "retired", "test retire");
+			const incrementalJson = readIndex();
+			const incrementalMd = readMd();
+			const rebuilt = await store.rebuildIndex();
+			assert.equal(rebuilt.records, 3, "a rescan still sees all three files, one of them archived");
+			assert.equal(readIndex(), incrementalJson, "index.json from the cache must equal index.json from a rescan");
+			assert.equal(readMd(), incrementalMd, "INDEX.md from the cache must equal INDEX.md from a rescan");
+			const entries = JSON.parse(readIndex()).records as { id: string; file: string; status: string }[];
+			assert.equal(entries.length, 2, "the retired record must be out of the live index either way");
+			for (const e of entries) assert.match(e.file, /records[\\/].*\.md$/, "every indexed record must point at a real path");
+		} finally {
+			cleanup(dir);
+		}
+	});
+
 	test("hit counters batch instead of rewriting on every lookup", async () => {
 		const { service, store, info, dir } = fresh("hits");
 		try {
