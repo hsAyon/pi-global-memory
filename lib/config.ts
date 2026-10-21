@@ -7,13 +7,19 @@
  *   3. `<store>/config.json` (written by `/memory config set`)
  *   4. CONFIG_DEFAULTS in lib/types.ts
  *
+ * Validation rules come from lib/configspec.ts, so the text that describes a
+ * setting and the rule that accepts it can never disagree. A rejected value is
+ * reported and ignored - never guessed at - because a silently coerced privacy
+ * setting is a security bug.
+ *
  * No pi imports here so the resolution logic is unit-testable on its own.
  */
 
 import * as os from "node:os";
 import * as path from "node:path";
-import type { GmAutoCapture, GmConfig, GmInjectMode, GmPrivacyMode, GmRedactMode, GmSelfHeal, GmSketchyMode } from "./types.ts";
-import { AUTOCAPTURE_MODES, CONFIG_DEFAULTS, INJECT_MODES, PRIVACY_MODES, REDACT_MODES, SELFHEAL_MODES, SKETCHY_MODES } from "./types.ts";
+import type { GmConfig } from "./types.ts";
+import { CONFIG_DEFAULTS } from "./types.ts";
+import { boolSpecKeys, enumSpecKeys, explainProblem, hintFor, numericSpecKeys, specFor, stringSpecKeys } from "./configspec.ts";
 import { expandHome, isPlainObject } from "./util.ts";
 
 export const SETTINGS_KEY = "globalMemory";
@@ -30,53 +36,11 @@ export function defaultStoreDir(env: NodeJS.ProcessEnv = process.env): string {
 	return path.join(agentDir(env), "global-memory");
 }
 
-const NUM_RANGES: Partial<Record<keyof GmConfig, [number, number]>> = {
-	catalogMaxChars: [0, 6000],
-	hitsMaxChars: [0, 4000],
-	maxIndexEntries: [0, 300],
-	maxHits: [0, 12],
-	searchMaxChars: [500, 20000],
-	readMaxChars: [500, 20000],
-	minSearchScore: [0, 20],
-	maxWritesPerSession: [0, 500],
-	maxRecordChars: [200, 8000],
-	dedupThreshold: [0, 1],
-	maxSignals: [10, 5000],
-	tentativeTtlDays: [0, 3650],
-	staleDays: [1, 3650],
-	maxActiveRecords: [10, 20000],
-	reloadTtlMs: [0, 600000],
-	minQuality: [0, 10],
-};
-
-const ENUM_KEYS: Partial<Record<keyof GmConfig, readonly string[]>> = {
-	inject: INJECT_MODES,
-	redactSecrets: REDACT_MODES,
-	autoCapture: AUTOCAPTURE_MODES,
-	privacy: PRIVACY_MODES,
-	sketchy: SKETCHY_MODES,
-	selfHeal: SELFHEAL_MODES,
-};
-
-const STRING_KEYS: (keyof GmConfig)[] = ["toggleShortcut"];
-
-const BOOL_KEYS: (keyof GmConfig)[] = [
-	"enabled",
-	"use",
-	"record",
-	"readOnly",
-	"requireEvidence",
-	"signals",
-	"confirmDestructive",
-	"statusLine",
-	"gitAutoCommit",
-	"restrictProjectPaths",
-	"includeTentative",
-	"respectSessionPrivacy",
-	"requireProjectTrustForWrites",
-	"autoVerify",
-	"includeDisputed",
-];
+const NUM_RANGES = numericSpecKeys();
+const ENUM_KEYS = enumSpecKeys();
+const STRING_KEYS = stringSpecKeys();
+const BOOL_KEYS = boolSpecKeys();
+const ALL_KEYS = Object.keys(CONFIG_DEFAULTS);
 
 function coerceBool(v: unknown): boolean | undefined {
 	if (typeof v === "boolean") return v;
@@ -106,13 +70,14 @@ function applySource(target: GmConfig, src: unknown, label: string, problems: st
 	for (const [rawKey, value] of Object.entries(src)) {
 		const key = rawKey as keyof GmConfig;
 		if (!(rawKey in CONFIG_DEFAULTS)) {
-			problems.push(`${label}: unknown setting "${rawKey}" (ignored)`);
+			const near = ALL_KEYS.filter((k) => k.startsWith(rawKey.slice(0, 3)));
+			problems.push(`${label}: unknown setting "${rawKey}" (ignored)${near.length ? ` - did you mean: ${near.join(", ")}?` : ""}`);
 			continue;
 		}
 		if (value === undefined || value === null) continue;
 		if (key === "dir") {
 			if (typeof value !== "string" || !value.trim()) {
-				problems.push(`${label}: dir must be a non-empty path`);
+				problems.push(`${label}: ${explainProblem("dir", "dir must be a non-empty path")}`);
 				continue;
 			}
 			target.dir = path.resolve(expandHome(value));
@@ -121,36 +86,17 @@ function applySource(target: GmConfig, src: unknown, label: string, problems: st
 		if (BOOL_KEYS.includes(key)) {
 			const b = coerceBool(value);
 			if (b === undefined) {
-				problems.push(`${label}: ${rawKey} must be true/false`);
+				problems.push(`${label}: ${explainProblem(rawKey, `${rawKey} must be true or false`)}`);
 				continue;
 			}
 			target[key] = b as never;
 			continue;
 		}
-		if (key === "inject") {
-			if (typeof value !== "string" || !(INJECT_MODES as readonly string[]).includes(value)) {
-				problems.push(`${label}: inject must be one of ${INJECT_MODES.join(", ")}`);
-				continue;
-			}
-			target.inject = value as GmInjectMode;
-			continue;
-		}
-		if (key === "redactSecrets") {
-			if (typeof value !== "string" || !(REDACT_MODES as readonly string[]).includes(value)) {
-				problems.push(`${label}: redactSecrets must be one of ${REDACT_MODES.join(", ")}`);
-			} else target.redactSecrets = value as GmRedactMode;
-			continue;
-		}
-		if (key === "autoCapture") {
-			if (typeof value !== "string" || !(AUTOCAPTURE_MODES as readonly string[]).includes(value)) {
-				problems.push(`${label}: autoCapture must be one of ${AUTOCAPTURE_MODES.join(", ")}`);
-			} else target.autoCapture = value as GmAutoCapture;
-			continue;
-		}
-		if (ENUM_KEYS[key]) {
-			const allowed = ENUM_KEYS[key] as readonly string[];
-			if (typeof value !== "string" || !allowed.includes(value)) {
-				problems.push(`${label}: ${rawKey} must be one of ${allowed.join(", ")}`);
+		const allowed = ENUM_KEYS[key];
+		if (allowed) {
+			const list = allowed as readonly string[];
+			if (typeof value !== "string" || !list.includes(value)) {
+				problems.push(`${label}: ${rawKey} must be one of ${list.join(" | ")}  (${hintFor(rawKey)})`);
 				continue;
 			}
 			(target as Record<string, unknown>)[rawKey] = value;
@@ -158,7 +104,7 @@ function applySource(target: GmConfig, src: unknown, label: string, problems: st
 		}
 		if (STRING_KEYS.includes(key)) {
 			if (typeof value !== "string" || value.length > 64) {
-				problems.push(`${label}: ${rawKey} must be a short string (<= 64 chars)`);
+				problems.push(`${label}: ${explainProblem(rawKey, `${rawKey} must be a short string (<= 64 chars)`)}`);
 				continue;
 			}
 			(target as Record<string, unknown>)[rawKey] = value;
@@ -168,11 +114,11 @@ function applySource(target: GmConfig, src: unknown, label: string, problems: st
 		if (range) {
 			const n = coerceNumber(value);
 			if (n === undefined) {
-				problems.push(`${label}: ${rawKey} must be a number`);
+				problems.push(`${label}: ${explainProblem(rawKey, `${rawKey} must be a number`)}`);
 				continue;
 			}
 			if (n < range[0] || n > range[1]) {
-				problems.push(`${label}: ${rawKey}=${n} out of range ${range[0]}..${range[1]}`);
+				problems.push(`${label}: ${rawKey}=${n} out of range ${range[0]}..${range[1]}  (${hintFor(rawKey)})`);
 				continue;
 			}
 			target[key] = n as never;
@@ -196,6 +142,31 @@ export interface ResolvedConfig {
 	sources: string[];
 }
 
+/** Env var name -> config key. Only the switches an operator may need to force. */
+const ENV_MAP: [string, keyof GmConfig][] = [
+	["DIR", "dir"],
+	["INJECT", "inject"],
+	["REDACT", "redactSecrets"],
+	["AUTOCAPTURE", "autoCapture"],
+	["READONLY", "readOnly"],
+	["GIT_AUTOCOMMIT", "gitAutoCommit"],
+	["STATUSLINE", "statusLine"],
+	["MAX_INDEX_ENTRIES", "maxIndexEntries"],
+	["CATALOG_MAX_CHARS", "catalogMaxChars"],
+	["HITS_MAX_CHARS", "hitsMaxChars"],
+	["USE", "use"],
+	["RECORD", "record"],
+	["PRIVACY", "privacy"],
+	["SKETCHY", "sketchy"],
+	["SELFHEAL", "selfHeal"],
+	["MIN_QUALITY", "minQuality"],
+	["TOGGLE_SHORTCUT", "toggleShortcut"],
+];
+
+export function envVarNames(): string[] {
+	return [`${ENV_PREFIX}DISABLE`, `${ENV_PREFIX}ENABLE`, ...ENV_MAP.map(([suffix]) => `${ENV_PREFIX}${suffix}`)];
+}
+
 export function resolveConfig(input: ResolveInput): ResolvedConfig {
 	const env = input.env ?? process.env;
 	const problems: string[] = [];
@@ -211,25 +182,7 @@ export function resolveConfig(input: ResolveInput): ResolvedConfig {
 	if (settingsObj && isPlainObject(settingsObj[SETTINGS_KEY])) sources.push(`settings.json:${SETTINGS_KEY}`);
 
 	// Environment last so an operator can always force a safe state.
-	const envMap: [string, keyof GmConfig][] = [
-		["DIR", "dir"],
-		["INJECT", "inject"],
-		["REDACT", "redactSecrets"],
-		["AUTOCAPTURE", "autoCapture"],
-		["READONLY", "readOnly"],
-		["GIT_AUTOCOMMIT", "gitAutoCommit"],
-		["STATUSLINE", "statusLine"],
-		["MAX_INDEX_ENTRIES", "maxIndexEntries"],
-		["CATALOG_MAX_CHARS", "catalogMaxChars"],
-		["HITS_MAX_CHARS", "hitsMaxChars"],
-		["USE", "use"],
-		["RECORD", "record"],
-		["PRIVACY", "privacy"],
-		["SKETCHY", "sketchy"],
-		["SELFHEAL", "selfHeal"],
-		["MIN_QUALITY", "minQuality"],
-	];
-	for (const [suffix, key] of envMap) {
+	for (const [suffix, key] of ENV_MAP) {
 		const v = env[`${ENV_PREFIX}${suffix}`];
 		if (v === undefined) continue;
 		applySource(config, { [key]: v }, `env ${ENV_PREFIX}${suffix}`, problems);
@@ -245,20 +198,30 @@ export function resolveConfig(input: ResolveInput): ResolvedConfig {
 	return { config, problems, sources: [...new Set(sources)] };
 }
 
-/** Parse `key value` text from `/memory config set`. */
+/** Parse `key value` text from `/memory config set`. Never applies a partial value. */
 export function parseConfigPatch(key: string, value: string): { patch: Record<string, unknown>; problems: string[] } {
-	const problems: string[] = [];
 	if (!key || !(key in CONFIG_DEFAULTS)) {
-		return { patch: {}, problems: [`unknown setting "${key}"; valid: ${Object.keys(CONFIG_DEFAULTS).sort().join(", ")}`] };
+		const near = key ? ALL_KEYS.filter((k) => k.startsWith(key.slice(0, 3))) : [];
+		return {
+			patch: {},
+			problems: [
+				`unknown setting "${key}"${near.length ? ` - did you mean: ${near.join(", ")}?` : ""}\nlist every key with: /memory config list\nexplain one with:  /memory config explain <key>`,
+			],
+		};
 	}
 	const probe: GmConfig = { ...CONFIG_DEFAULTS };
-	applySource(probe, { [key]: value }, "input", problems);
-	if (problems.length > 0) return { patch: {}, problems };
+	const problems: string[] = [];
+	applySource(probe, { [key]: value }, `"${key}"`, problems);
+	if (problems.length > 0) {
+		const spec = specFor(key);
+		if (spec?.sensitive) problems.push(`"${key}" affects privacy or safety - read /memory config explain ${key} before relaxing it.`);
+		return { patch: {}, problems };
+	}
 	return { patch: { [key]: (probe as Record<string, unknown>)[key] }, problems };
 }
 
 export function configKeys(): string[] {
-	return Object.keys(CONFIG_DEFAULTS).sort();
+	return [...ALL_KEYS].sort();
 }
 
 export function configAsPlainObject(c: GmConfig): Record<string, unknown> {
