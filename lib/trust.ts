@@ -471,6 +471,47 @@ export function assessRuntimeNoise(parts: (string | undefined | null)[]): Runtim
 }
 
 /**
+ * The second class-level veto: an exploration diary. Auto-capture once wrote four confident-looking
+ * "mistakes" about cd and grep from one scratch session - a search that missed, paired with a search
+ * that did not. Those records passed every other check because they really are concrete, cited, and
+ * paired. What makes them worthless is that nothing in the situation changed: the "fix" was typing a
+ * different search, and the next session will not be making this one.
+ *
+ * A genuine miss with a real fix is not a diary and keeps its place: the file had to be generated, the
+ * path moved, the package had to be installed, a flag had to be added. That difference is the escape
+ * hatch, and it is checked on the fix side (`how`), where a real remedy names a delta.
+ */
+const DIARY_MISS = /(no such file|cannot open|cannot access|no matches found|nothing found|does not exist|not found|enoent)/i;
+const SEARCH_CALL_HEAD = /^\s*(?:cd\s+\S+[^&|;]*(?:&&|[;])\s*)?(?:npx\s+)?(grep|rg|egrep|fgrep|head|tail|cat|less|more|ls|dir|find|fd|tree|stat|open|wc|sort|uniq|diff|comm|du|df|file|which|whereis)\b/i;
+const FIX_DELTA = /\b(install|generate|generated|mkdir|touch|rename|renamed|moved|set|sets|setting|export|enable|disable|create|patch|update|configure|config|instead|rather than|otherwise|must|needs|needed|required|missing|because|first|before|then)\b/i;
+
+export interface ExplorationDiary {
+	diary: boolean;
+	why: string;
+}
+
+export function assessExplorationDiary(parts: { statement: string; how: string; avoid: string; why: string; title: string }): ExplorationDiary {
+	const body = [parts.title, parts.statement, parts.avoid, parts.why].filter(Boolean).join(" ");
+	// Auto-captured drafts wrap the remedy in a template (Use "..." instead, then confirm the result.)
+	// whose scaffolding words must not be mistaken for a delta, or the veto could never fire on the very
+	// records it exists for. Strip the scaffolding, keep the quoted remedy.
+	const fix = [parts.how, parts.why]
+		.filter(Boolean)
+		.join(" ")
+		.replace(/\buse\s+"/gi, "")
+		.replace(/"\s*instead\s*,?\s*then confirm the result\.?/gi, " ")
+		.replace(/"\s*instead\.?|\bthen confirm the result\b|\bconfirm the result\b/gi, " ")
+		.trim();
+	if (!DIARY_MISS.test(body)) return { diary: false, why: "" };
+	if (!SEARCH_CALL_HEAD.test(fix)) return { diary: false, why: "" };
+	if (FIX_DELTA.test(fix)) return { diary: false, why: "" };
+	return {
+		diary: true,
+		why: "the failure was a search that missed and the remedy is another search: nothing about the situation changed, so the next session learns nothing from it",
+	};
+}
+
+/**
  * Usefulness: does this deserve one of the store's slots?
  *
  * Quality (the other rubric) asks whether a record is well-formed and reliable. This asks a

@@ -51,6 +51,10 @@ export class MemoryService {
 	writes = 0;
 	/** Drafts refused because they were not worth a slot; shown in /memory status. */
 	usefulnessDiscards = 0;
+	/** Write-gate class vetoes, counted so filtering is visible rather than silent. */
+	diaryDiscards = 0;
+	faultDiscards = 0;
+	artifactDiscards = 0;
 	overrides: { use?: boolean; record?: boolean } = {};
 	private pendingVerify = new Set<string>();
 	private pendingDispute = new Set<string>();
@@ -113,6 +117,9 @@ export class MemoryService {
 	beginSession(): void {
 		this.writes = 0;
 		this.usefulnessDiscards = 0;
+		this.diaryDiscards = 0;
+		this.faultDiscards = 0;
+		this.artifactDiscards = 0;
 		this.overrides = {};
 		this.pendingVerify.clear();
 		this.pendingDispute.clear();
@@ -277,6 +284,9 @@ export class MemoryService {
 		});
 		if (!res.ok || !res.record) {
 			if (res.problems.some((p) => p.startsWith("discarded as not useful enough"))) this.usefulnessDiscards++;
+			if (res.problems.some((p) => p.startsWith("refused as an exploration diary"))) this.diaryDiscards++;
+			if (res.problems.some((p) => p.startsWith("refused as an agent/runtime fault report"))) this.faultDiscards++;
+			if (res.problems.some((p) => p.startsWith("refused because the draft carries an unrenderable value"))) this.artifactDiscards++;
 			return res;
 		}
 		for (const f of opts.autoFlags ?? []) if (!res.record.flags.includes(f)) res.record.flags.push(f);
@@ -494,7 +504,13 @@ export class MemoryService {
 		const c = this.store.counts();
 		const p = this.posture(info);
 		const mode = !this.cfg.enabled ? "off" : p.use ? (p.record ? "use+record" : "use-only") : "read-blocked";
-		const discarded = this.usefulnessDiscards > 0 ? `; discarded ${this.usefulnessDiscards} draft(s) as not worth keeping` : "";
+		const parts: string[] = [];
+		if (this.usefulnessDiscards > 0) parts.push(`not useful x${this.usefulnessDiscards}`);
+		if (this.diaryDiscards > 0) parts.push(`exploration diary x${this.diaryDiscards}`);
+		if (this.faultDiscards > 0) parts.push(`fault report x${this.faultDiscards}`);
+		if (this.artifactDiscards > 0) parts.push(`unrenderable draft x${this.artifactDiscards}`);
+		const total = this.usefulnessDiscards + this.diaryDiscards + this.faultDiscards + this.artifactDiscards;
+		const discarded = total > 0 ? `; discarded ${total} draft(s) as not worth keeping (${parts.join(", ")})` : "";
 		return `GM ${mode}: ${c.active} records (${c.categories ? Object.keys(c.categories).length : 0} categories), ${c.retired} retired, ${c.invalid} unreadable${c.invalid ? "!" : ""}${discarded}`;
 	}
 

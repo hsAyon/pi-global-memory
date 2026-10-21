@@ -31,6 +31,19 @@ describe("useless drafts are discarded, not stored", () => {
 			"textbook fact",
 			{ kind: "fact", category: "npm", title: "npm installs dependencies", statement: "npm install installs the dependencies listed in package.json into node_modules", evidence: [{ type: "url", ref: "https://docs.npmjs.com/cli/install" }] },
 		],
+		[
+			"transcript of what was typed",
+			{
+				kind: "mistake",
+				category: "cd",
+				title: "cd: \"cd /srv/app && grep -rln something src/\" worked after \"cd /srv/app && head -40 src/x.ts\"",
+				statement: 'bash call "cd /srv/app && head -40 src/x.ts && grep -n test src/x.ts" failed 1x; a later bash call "cd /srv/app && grep -rln something src/ && grep -c import src/a.ts" succeeded',
+				avoid: `head: cannot open 'src/x.ts' for reading: No such file or directory`,
+				how: "cd /srv/app && grep -rln something src/",
+				cues: ["cannot open", "No such file or directory"],
+				evidence: [{ type: "command", ref: "cd /srv/app && grep -rln something src/" }],
+			},
+		],
 	];
 
 	for (const [label, draft] of junk) {
@@ -39,8 +52,12 @@ describe("useless drafts are discarded, not stored", () => {
 			try {
 				const res = await b.service.add(draft as never, b.info, { allowPrivate: true });
 				assert.ok(!res.ok, `${label} should not have been stored`);
-				assert.match(res.problems.join(" "), /not useful enough/);
-				assert.match(res.problems.join(" "), /score \d+\/10/);
+				if (label === "transcript of what was typed") {
+					assert.match(res.problems.join(" "), /exploration diary/, "a diary refusal has to say why a diary is worthless");
+				} else {
+					assert.match(res.problems.join(" "), /not useful enough/);
+					assert.match(res.problems.join(" "), /score \d+\/10/);
+				}
 				assert.equal(b.service.store.counts().active, 0, "a discarded draft must leave nothing behind");
 				assert.match(b.service.statusSummary(b.info), /discarded 1 draft\(s\) as not worth keeping/, "the discard has to be visible");
 			} finally {

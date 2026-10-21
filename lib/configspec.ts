@@ -299,7 +299,7 @@ export const CONFIG_SPEC: ConfigSpec[] = [
 		type: "enum",
 		values: AUTOCAPTURE_MODES,
 		description: "Write down fixes the agent actually proved during the run, without being asked.",
-		effect: "fixes (default) writes only failed-call -> working-call pairs where the second call really succeeded, marked 'auto' and tentative, at confidence 1. Unresolved failures are never written: they wait as signals for /memory review. Failures of the agent or its runtime (rejected tool calls, aborts, compaction, context overflow, rate limits, model-runner faults) are classified as noise and never recorded, whatever this is set to. off = nothing is written unless the model or you ask.",
+		effect: "fixes (default) writes only failed-call -> working-call pairs where the second call really succeeded, marked 'auto' and tentative, at confidence 1. Unresolved failures are never written: they wait as signals for /memory review. Failures of the agent or its runtime are classified as noise and never recorded, whatever this is set to: rejected tool calls, aborts, compaction, context overflow, rate limits, model-runner faults, a shell that rejected the command string, errors from a throwaway script written in the same run, and searches that missed a guessed path. off = nothing is written unless the model or you ask.",
 		sensitive: true,
 	},
 	{

@@ -57,7 +57,31 @@ const NOISE_PATTERNS: { re: RegExp; cls: NoiseClass; why: string }[] = [
 ];
 
 /** An edit whose oldText simply did not match is a model slip, not an environment fact. */
-const EDIT_MISS = /(old ?text|oldtext)[^\n]{0,48}(?:not found|no match|did not match|not present)|(?:no match|did not match)[^\n]{0,32}old ?text/i;
+const EDIT_MISS = /(old ?text|oldtext)[^\n]{0,48}(?:not found|no match|did not match|not present)|(?:no match|did not match)[^\n]{0,32}old ?text|could not find edits|could not find the exact text/i;
+
+/**
+ * A search that missed - a guessed file name, a path that was not there, a grep with no match - is an
+ * exploration misfire. The "fix" is almost always just another search, and the pair teaches nothing
+ * durable: the next session will not be looking for that file. Auto-capturing these turned a scratch
+ * session into four "mistakes" about cd and grep, which is how a store becomes a diary.
+ */
+const SEARCH_MISS = /(cannot open|no such file or directory|does not exist|cannot find|no matches found|nothing found)/i;
+const SEARCH_START = /^(grep|rg|egrep|fgrep|head|tail|cat|sed|awk|ls|find|stat|test|file|open|type|cat)\b/;
+
+/**
+ * Two more shapes that are the agent's own slips rather than facts about the machine: a command string
+ * that the shell rejected before running it (quoting, heredoc, syntax), and an error thrown by a
+ * throwaway script written moments earlier in the same session. Both were captured as "mistakes" with
+ * a "fix" that was just a different command.
+ */
+const SHELL_SYNTAX = /(?:^|\s)\/usr\/bin\/(?:bash|sh|zsh|dash): (?:-c: )?line \d+: /;
+const SHELL_SYNTAX_PLAIN = /^\s*(?:bash|sh|zsh): line \d+: /;
+const SCRATCH_SCRIPT = /^\s*(?:cd\s+\S+[^&|;]*(?:&&|[;])\s*)?(?:node\s+-(?:e\b|\s*-\b|\s*<<|--input-type)|npx\s+tsx?\s*[-<]|python(?:3)?\s+(?:-c\b|-\b|<<)|python(?:3)?\s+-<<|deno\s+eval|pwsh\s+-Command|powershell\s+-Command)/i;
+
+function stripCdPrefix(arg: string): string {
+	const m = /^cd\s+[^&|;]+(?:&&|[;])\s*/i.exec(arg);
+	return m ? arg.slice(m[0].length) : arg;
+}
 
 /**
  * Classify one errored observation. `null` means "this is a real failure in the user's
@@ -69,12 +93,27 @@ export function failureNoise(o: ToolObservation): { cls: NoiseClass | null; why:
 	if (arg === "") return { cls: "empty-argument", why: "the call carried no usable argument, so there is nothing to learn" };
 	const text = normWs(o.text ?? "");
 	if (text === "") return { cls: "no-detail", why: "the failure came back with no message" };
+	// An argument that could not be rendered cannot be learned from. A record whose "before" and
+	// "after" are literally `[object Object]` is an artefact of how the call was logged, and four such
+	// records once entered the store as confident-looking "mistakes" about file paths.
+	if (/\[object Object\]|\[object Map\]|\[object Set\]/.test(arg)) {
+		return { cls: "no-detail", why: "the call arguments were logged unrenderably ([object Object]), so there is nothing durable to record" };
+	}
 	// Specific phrases first: "Compaction cancelled" is a runtime fault, not merely an abort,
 	// and the class shown to the user should be the useful one.
 	for (const { re, cls, why } of NOISE_PATTERNS) if (re.test(text)) return { cls, why };
 	if (looksAborted(text)) return { cls: "aborted", why: "the run was stopped by the user or the harness" };
 	if ((o.toolName === "edit" || o.toolName === "write") && EDIT_MISS.test(text)) {
 		return { cls: "model-call", why: "the edit simply did not match the file: re-read and retry, not a lesson about the project" };
+	}
+	if ((o.toolName === "bash" || o.toolName === "powershell") && SEARCH_MISS.test(text) && SEARCH_START.test(stripCdPrefix(arg))) {
+		return { cls: "model-call", why: "a search that missed a guessed path: an exploration misfire, not a fact about the environment" };
+	}
+	if ((o.toolName === "bash" || o.toolName === "powershell") && (SHELL_SYNTAX.test(text) || SHELL_SYNTAX_PLAIN.test(text))) {
+		return { cls: "model-call", why: "the command string itself was malformed - a quoting or syntax slip to fix by re-running with simpler quoting, not a fact about the project" };
+	}
+	if (o.toolName === "bash" && SCRATCH_SCRIPT.test(arg)) {
+		return { cls: "model-call", why: "a throwaway script written in this session failed: its error is a scratch mistake, not a fact about the codebase" };
 	}
 	return { cls: null, why: "" };
 }
@@ -105,7 +144,19 @@ export interface Candidate {
 
 function primaryArg(toolName: string, input: Record<string, unknown>): string {
 	if (toolName === "bash" || toolName === "powershell") return String(input.command ?? "");
-	if (toolName === "edit") return `${String(input.path ?? "")}|${truncate(String(input.edits ?? input.oldText ?? ""), 80)}`;
+	if (toolName === "edit") {
+		// Render edits structurally. String(input.edits) yields "[object Object],[object Object]", which
+		// used to become the *content* of captured records: an unreadable pair presented as a lesson.
+		const path = String(input.path ?? "");
+		const edits = Array.isArray(input.edits) ? (input.edits as unknown[]) : [];
+		const sig = edits
+			.map((e) => {
+				const o = (e ?? {}) as Record<string, unknown>;
+				return `${normWs(String(o.oldText ?? "")).slice(0, 40)}=>${normWs(String(o.newText ?? "")).slice(0, 40)}`;
+			})
+			.join(" ; ");
+		return truncate(`${path}|${sig || normWs(String(input.oldText ?? ""))}`, 140);
+	}
 	if (toolName === "write") return String(input.path ?? "");
 	if (toolName === "read") return String(input.path ?? "");
 	if (toolName === "grep" || toolName === "find") return String(input.pattern ?? "");

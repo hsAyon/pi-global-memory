@@ -10,7 +10,7 @@
 import type { GmEntry, GmEvidence, GmKind, GmPrivacyMode, GmRecord, GmScope, GmSketchyMode, GmStatus } from "./types.ts";
 import { EVIDENCE_TYPES, KINDS, STATUSES } from "./types.ts";
 import * as nodePath from "node:path";
-import { assessRuntimeNoise, assessTrust, assessUsefulness, maskPrivacy, qualityScore, usefulnessVerdict } from "./trust.ts";
+import { assessExplorationDiary, assessRuntimeNoise, assessTrust, assessUsefulness, maskPrivacy, qualityScore, usefulnessVerdict } from "./trust.ts";
 import { harden, isSafeRelativePath, sanitizeIdToken } from "./sanitize.ts";
 import {
 	clamp,
@@ -418,6 +418,19 @@ export function normalizeDraft(draft: Draft, opts: NormalizeOptions): Validation
 	const runtime = assessRuntimeNoise([fTitle, fStatement, fWhy, fHow, fAvoid, fNotes]);
 	if (runtime.noise) {
 		problems.push(`refused as an agent/runtime fault report: ${runtime.why}. Record the durable rule instead - the flag, path, setting, or command that actually explains the behaviour, with the evidence you saw. If the fault is a real bug in pi or the model runner, report it upstream rather than storing it.`);
+	}
+	// The other class-level veto: an exploration diary. A missed search paired with one that worked is
+	// worth nothing unless something actually changed, and auto-capture used to file four such "fixes"
+	// from a single scratch session.
+	const diary = assessExplorationDiary({ title: fTitle, statement: fStatement, why: fWhy, how: fHow, avoid: fAvoid });
+	if (diary.diary) {
+		problems.push(`refused as an exploration diary: ${diary.why}. If the miss did have a cause - a file that must be generated, a path that moved, a package that must be installed - name that change in how, with the command that fixes it.`);
+	}
+	// A draft carrying an unrenderable value is a logging artefact. Six records once reached the store
+	// whose "failed" and "worked" text was literally `[object Object]`, because the call arguments were
+	// stringified instead of read. Nothing about them is re-checkable.
+	if (/\[object (?:Object|Map|Set|Array|Promise)\]/.test([fTitle, fStatement, fWhy, fHow, fAvoid, fNotes].join(" "))) {
+		problems.push("refused because the draft carries an unrenderable value ([object Object]): what it describes did not survive being logged. Re-read the source or re-run the command and write the text you actually saw.");
 	}
 	if (opts.privacy === "standard") {
 		const masked = maskPrivacy([fTitle, fStatement, fWhy, fHow, fAvoid, fNotes].join("\u0001"));
