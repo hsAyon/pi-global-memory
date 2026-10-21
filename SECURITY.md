@@ -15,6 +15,7 @@ This document states what `pi-global-memory` guarantees, what it does not, and w
 | Versioning of records leaking into somebody else's repository, or being influenced by global git config | The extension's git use is contained to the store: `--git-dir <store>/.git --work-tree <store>` plus `GIT_DIR`/`GIT_WORK_TREE`, so upward repository discovery is never in play; `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` point at an empty file inside the store; hooks are disabled via `core.hooksPath`; `fsmonitor`, signing, and auto-gc are off; subcommands run through an allow-list. `test/git.test.ts` proves a parent repository gains no commits. |
 | A container file being tampered with, truncated, or weaponised as a decompression bomb | Payload SHA-256 verified on import; encrypted containers additionally authenticated (AES-256-GCM with the header as additional authenticated data, so header edits fail the tag). Inflate is capped (`maxOutputLength`), record counts and text size are capped, unknown versions/ciphers are refused. `test/container.test.ts` covers each path. |
 | An exported copy quietly containing a secret or personal identifier | The export path re-scans each record: secret-shaped or personal/confidential text is skipped and reported unless `allowprivate` is passed deliberately. |
+| A store accumulating the agent's own faults, which then steers every later session | Failures of the agent or its runtime are classified out of capture before they can become records, and the write gate refuses an agent saving one deliberately. Exclusions are counted in `/memory review`, never silent. See "What the store refuses to record". |
 | A bulk delete happening by accident, or without a way back | `/memory delete-all` stages a single-use token that must be typed in a second call, expires in 10 minutes, and writes a container backup before deleting anything. `confirmDestructive: false` cannot lower this floor. |
 | Path traversal out of the store (including through `category`, `id`, `scope.path`) | Every path is produced by `MemoryStore.safeJoin` and verified with `inside()`; `..`, absolute paths, and separators in ids/categories are rejected. `restrictProjectPaths` keeps project-scoped records inside the cwd. |
 | A hostile or careless project steering what gets remembered | While `requireProjectTrustForWrites: true` (default), an untrusted project cannot write at all: `ctx.isProjectTrusted()` is checked on every write path, tool and command alike. |
@@ -64,6 +65,31 @@ This reduces the blast radius of a poisoned record; it does not make records tru
 - pi itself, other extensions, or the model provider: memory that is retrieved becomes part of the model context like any other prompt text. Turning `use: false` keeps it out.
 - Semantic leakage: two records can imply a secret between them even if neither matched a redactor. If a store has gone wrong, `/memory delete <id> force` plus a git history rewrite is the fix; `/memory doctor` reports candidates.
 - A record that is *correct but no longer true*. Nothing self-heals a record that is never exercised; that is what `tentativeTtlDays`, `staleDays`, `/memory audit`, and `/memory prune` are for.
+
+## What the store refuses to record
+
+A memory store is an integrity object: if it accumulates junk, every future session is misled by it.
+The junk that matters most is not stale facts but the agent's own failures - a tool call the harness
+rejected, an abort, a compaction notice, a context overflow, a provider rate limit, a model-runner
+fault. Those are not observations about your environment, nobody can re-verify them, and recording
+them teaches the next session to route around a transient fault.
+
+Two independent layers enforce that:
+
+- **Capture classification** (`lib/capture.ts`): errored tool observations are matched against the
+  phrases pi itself emits (`Tool "<name>" not found`, `Tool "<name>" failed`, `Invalid arguments for
+  tool ...`, `Request was aborted`, `Compaction cancelled`, context-overflow and rate-limit phrasing)
+  plus structural tells - a call with no usable argument, an `edit` whose `oldText` did not match.
+  Matches are dropped, counted, and reported in `/memory review`.
+- **The write gate** (`lib/trust.ts`): a draft that pairs an agent-runtime subject with a failure
+  predicate is refused, whoever wrote it. Relaxing `privacy`, `sketchy`, or `minQuality` does not
+  re-admit it - it is a floor, not a posture, in the same spirit as the `delete-all` token.
+
+Whole-word subject matching is deliberate: "the ssh session times out", "the systemd service fails to
+start", and "npm ci fails when the lockfile is stale" are real environment knowledge and stay
+recordable, while "pi crashed", "compaction error", and "the model runner failed" are not. The refusal
+message points at the durable rule instead - the flag, path, or setting that explains the behaviour -
+because the fact implied by a fault is usually worth keeping even when the fault is not.
 
 ## Git inside the extension
 

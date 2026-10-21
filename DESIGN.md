@@ -209,6 +209,40 @@ entry and asserts every runtime-reachable file is published, nothing development
 and that `lib/version.ts`, `package.json`, and `CHANGELOG.md` agree on the version. The same test
 refuses absolute machine paths in shipped code, which is what keeps the package portable.
 
+## Decision 14 - what is allowed to become a record
+
+Auto-capture is the part of this package that can do the most damage: an unattended writer into a
+store that every future session reads. Session failures are the obvious input, and also the worst
+one - a rejected tool call, an abort, a compaction notice, a context overflow, or a model-runner
+fault says nothing about the user's environment.
+
+| Option | Assessment |
+| --- | --- |
+| Never capture automatically; the agent always writes deliberately | Credible, but it gives up the main benefit: the fix the agent paid for at 2am and then forgot. The user should not have to notice a mistake in time to ask for it. |
+| Capture every failure and let the user prune (`/memory review`) | Puts the cost of the writer on the user, and the noise dominates: most failures in a session are the agent's own. |
+| **Classify the source of each failure and keep only environment knowledge** (chosen) | A failed call plus a later, different call that succeeded is a proven fix about the world. Phrases the harness itself emits, plus structural tells (no usable argument; an `edit` whose `oldText` missed), are dropped and counted rather than guessed at. |
+
+The marker list is anchored to strings this pi release actually emits - `Tool "<name>" not found` and
+`Invalid arguments for tool "<name>": ...` from tool validation, `Request was aborted`, `Compaction
+cancelled`, `Compaction produced no summary ...`, and the context-overflow patterns pi matches
+provider errors against - recorded in `docs/NOTES.md` with their source. A guessed list would be a
+place for the policy to quietly rot.
+
+Two further choices:
+
+- **The write path has its own gate.** Capture filtering alone would still let the agent save a fault
+  report on purpose (`memory_save`: "pi crashed, retry"). The gate looks for an agent-runtime subject
+  near a failure predicate, matching on whole words only, so "the ssh session times out" and "npm ci
+  fails when the lockfile is stale" remain recordable while "pi crashed" and "compaction error" do
+  not. It refuses rather than flags, and says how to comply: store the flag, path, or setting that
+  explains the behaviour.
+- **It is a floor, not a posture.** No configuration re-admits fault reports. Posture knobs already
+  control privacy, sketchy content, and quality; letting one of them silently re-enable a writer for
+  junk would make the store's credibility depend on remembering a setting.
+
+Unresolved failures are not knowledge either, so they stay in the signal ledger for the user to
+accept or ignore; only proven fix pairs are ever written without being asked.
+
 ## Known trade-offs
 
 - The catalog is a ranked *sample*, not the whole store: past `maxIndexEntries` the agent must search. Making the sample bigger costs context on every turn for every user; the pointer line keeps the cost of being wrong at one extra tool call.

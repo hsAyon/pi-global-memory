@@ -14,10 +14,25 @@ agent reads: memory_lookup {"action":"read","ids":["gm-docker-layer-cache-ignore
 
 - **Offline by construction.** No network API is referenced anywhere in the extension; a test enforces it (`test/offline.test.ts`). Git bookkeeping runs with `GIT_ALLOW_PROTOCOL=none` and `protocol.ext.allow=never`, so even the optional auto-commit cannot reach a remote.
 - **Private by default.** Personal identifiers, confidential-sounding text, secrets, transcripts, and hedged guesses are refused unless you explicitly relax the posture.
+- **Only knowledge is recorded.** Records come from the agent citing evidence, or from a mistake it
+  actually corrected in front of it. Failures of the agent or its runtime - a rejected tool call, an
+  abort, a compaction error, a model-runner fault, a context overflow, a system error - are
+  classified as noise, never stored, and counted in `/memory review` so the exclusion is visible.
+
 - **Accuracy first.** A memory that live evidence contradicts gets *disputed* automatically, drops out of prompt injection, and is corrected or retired - a wrong memory is worse than none.
 - **Auditable.** Every record is one Markdown file with front-matter metadata: `records/<category>/<id>.md`. `grep`, `git diff`, and other agents can read the store without this extension.
 
-Status: `0.1.0`, verified against pi **1.3.0** (`npm run check` loads it through pi's real extension host). See [CHANGELOG.md](CHANGELOG.md).
+> **Experimental.** This package changes how pi behaves: it inserts sections into your system
+> prompt, registers tools the model can call, writes a store outside the repository, and can capture
+> learnings automatically at the end of a run. It is verified against one pi release (**1.3.0**) and
+> nothing more. Record and container formats are versioned, but they may still change between
+> releases without a migration path, so treat the store as disposable: `/memory export` before you
+> upgrade, `/memory import` after. Do not put anything in it that you could not afford to lose or
+> to have read by whoever can read your home directory. Bug reports welcome; expect rough edges.
+
+
+Current version `0.3.0`, verified against pi **1.3.0** (`npm run check` loads it through pi's real
+extension host). See [CHANGELOG.md](CHANGELOG.md) for what changed.
 
 ---
 
@@ -281,6 +296,52 @@ local history, contained by construction:
 
 Commits are attributed to `pi-global-memory <memory@localhost>` unless you set an identity inside
 the store repository. Pushing remains your command, from a shell.
+
+## What gets recorded - and what never is
+
+
+The store is worth having only if it stays credible. Two rules decide what enters it:
+
+
+**1. A record is initiated by the agent, with evidence.** The agent writes through `memory_save`,
+which refuses a record with no citation (a command, a file, a URL, a session, an artifact) and refuses
+hedged wording ("maybe", "I think", "appears to"). The point is facts over guesses: a record should be
+something the agent *saw*, not something it inferred.
+
+
+**2. Auto-capture keeps only proven fixes, from real environment failures.** At the end of a run the
+extension looks at what actually happened: a call that failed and a later, different call that
+succeeded in the same intent. That pair is written as a `mistake` record at confidence 1, worded as
+what was observed rather than a causal story, and told to be re-verified. Unresolved failures become
+*signals* in a pending ledger that you decide about (`/memory review`, `/memory accept`) - nothing
+unresolved is written silently.
+
+
+**Never recorded**, at either layer, because these are faults in the agent or its runtime and not
+facts about your environment:
+
+
+| Excluded | Why it would be harmful instead |
+| --- | --- |
+| tool calls rejected by argument validation, unknown tool names, schema/JSON errors | the command never ran: there is nothing about your machine in the outcome |
+| aborted or cancelled calls, `Request was aborted` | the run was stopped, not informed |
+| compaction events and errors (`Compaction cancelled`, no-summary notices) | session management internals; a record here would teach future sessions to work around pi |
+| context overflow, `prompt is too long`, maximum-context messages | a transient sizing fault |
+| rate limits, overloaded, service-unavailable, provider transport trouble | it will be different next time, and the record outlives it |
+| model-runner faults, `stop reason`, truncated output, stack traces, `Tool "x" failed` | a bug report for pi or the runner, not knowledge |
+| an `edit` whose `oldText` simply did not match | a slip while editing: re-read and retry, that is not a project rule |
+
+
+The gate on the *write* path is separate from the capture classifier, so an agent cannot save one of
+these on purpose either: a draft that pairs an agent-runtime subject (pi, the model, the harness, the
+runtime, compaction, a tool call) with a failure predicate is refused, and told to record the durable
+rule instead - the flag, path, or setting that actually explains the behaviour. Legitimate knowledge
+*about* pi is fine: "pi keeps sessions in memory under `--no-session`, so nothing persists" passes
+without difficulty. The fault report does not; the fact it implies does.
+
+
+`/memory review` ends with what was ignored and how much, so this filtering is never silent:
+`ignored as agent or runtime noise (never recorded): model-call x1, runtime x2`.
 
 ## On disk
 

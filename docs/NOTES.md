@@ -204,6 +204,32 @@ Semver under 0.x: a new user-facing command or documented output is a minor bump
 (`STORE_FORMAT`, `CONTAINER_FORMAT`) are independent of the package version and only move when
 the bytes change.
 
+## Recording policy: which failure texts are harness noise (evidence from pi 1.3.0)
+
+The phrases in `lib/capture.ts` are not guesses. Observed in the installed pi 1.3.0 build
+(`dist/` bundles under the release directory):
+
+| Text | Where it comes from | Class |
+| --- | --- | --- |
+| `Tool "<name>" not found` | tool-call validation (`validateToolCall`) | harness |
+| `Invalid arguments for tool "<name>": <detail>` | tool-argument validation (`validateToolArguments`) | model-call |
+| `Tool "<name>" failed` | pi's tool wrapper when the implementation throws | harness |
+| `Request was aborted` | aborted assistant message (cancellation) | aborted |
+| `Compaction cancelled`, `Compaction produced no summary; keeping the conversation as it is.` | pi's compaction path | runtime |
+| `prompt is too long`, `exceeds the context window`, `maximum context length`, and friends | the context-overflow pattern list pi matches provider errors against | runtime |
+| `rate limit reached; retry in Ns`, `overloaded` | provider/transport errors | runtime |
+
+Layering note: context-overflow and rate-limit faults usually arrive as *assistant* error messages,
+not tool results, so they rarely reach the ledger anyway. The markers remain as defence for mined
+branches (`/memory capture`, `/memory review`) and for harness-wrapped variants.
+
+Also established in that pass: an `edit` whose `oldText` did not match is an agent slip (re-read,
+retry), while `ENOENT`/`EACCES`/`EPERM` are real environment facts and stay recordable. Whole-word
+subject matching in `assessRuntimeNoise` is what keeps "the ssh session times out" and "the systemd
+service fails to start" writable - `session`, `system`, and `provider` are deliberately **not**
+subjects, because they describe the user's infrastructure as often as they describe the runtime.
+Tests: `test/recording-policy.test.ts` (capture layer and write gate, plus the discrimination list).
+
 ## Prior art found while researching (for attribution)
 
 Searched with ketch on 2026-10-21 (ketch v0.19.0), query
