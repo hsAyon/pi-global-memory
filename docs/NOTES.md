@@ -230,6 +230,37 @@ service fails to start" writable - `session`, `system`, and `provider` are delib
 subjects, because they describe the user's infrastructure as often as they describe the runtime.
 Tests: `test/recording-policy.test.ts` (capture layer and write gate, plus the discrimination list).
 
+## Usefulness rubric: the signals, bands, and calibration lessons (0.5.0)
+
+`assessUsefulness` (lib/trust.ts) answers a question reliability cannot: is this worth a slot?
+
+| Adds | Subtracts |
+| --- | --- |
+| names a flag/option, a file or path, an environment variable, a dotted config key, or a real command (capped at +3) | no concrete name at all (-3): it reads like a generality |
+| records both the mistake and the fix (avoid + how filled in) | no cost/contrast/caveat stated (-3), and a further -2 if it reads like a dictionary definition of a well-known tool |
+| states a contrast or qualifier (`instead`, `unlike`, `only`, `must`, `fails when`, `defaults to`) | hedging words (maybe, might, seems, consider, usually) up to -3 |
+| evidence of type command/file/artifact (re-checkable) | unactionable advice (`be careful`, `double check`, `best practice`) -2 |
+| says what was observed or tested | writing about the conversation itself (`this session`, `the model`, `the agent`) -2 |
+| carries retrieval cues | throwaway references (`/tmp`, `session:`, `today`, `current branch`) -2 |
+| a specific category | counting events without a cause ("3 errors") -2; dumping-ground category (`misc`, `tools`, `repo`) -1; title+statement under 60 chars -1 |
+
+Bands (`usefulnessVerdict`, floor = `minUsefulness`, default 4): below the floor **discard** (nothing
+written, `/memory status` counts it); floor to floor+3 **store flagged** `low-value` (shown by
+`/memory ls`, retired by `/memory audit` if it never earns a lookup); above that **store** plainly.
+Auto-captured drafts face floor+1 because no human reviewed them.
+
+Calibration lessons from building it, both found by probing before wiring:
+
+- "npm install installs dependencies from package.json into node_modules" scored 5 and would have been
+  stored. Names alone are not usefulness, hence the "no cost paid" and "dictionary definition"
+  deductions. A rubric without adversarial probe cases is a rubric that quietly accepts clutter.
+- The old test asserting "minQuality 0 is the allow-anyway switch" had to change: relaxing reliability
+  must not become a licence to store clutter, so both floors have to be relaxed together. That is a
+  design statement, not a test inconvenience - and the test now asserts both halves.
+- A flag band needs teeth or it is decoration: the audit retires flagged records with zero lookups
+  past `tentativeTtlDays`, which is what makes a borderline write-time guess reversible instead of
+  permanent. Test: `test/usefulness.test.ts`.
+
 ## Prior art found while researching (for attribution)
 
 Searched with ketch on 2026-10-21 (ketch v0.19.0), query

@@ -16,6 +16,7 @@ This document states what `pi-global-memory` guarantees, what it does not, and w
 | A container file being tampered with, truncated, or weaponised as a decompression bomb | Payload SHA-256 verified on import; encrypted containers additionally authenticated (AES-256-GCM with the header as additional authenticated data, so header edits fail the tag). Inflate is capped (`maxOutputLength`), record counts and text size are capped, unknown versions/ciphers are refused. `test/container.test.ts` covers each path. |
 | An exported copy quietly containing a secret or personal identifier | The export path re-scans each record: secret-shaped or personal/confidential text is skipped and reported unless `allowprivate` is passed deliberately. |
 | A store accumulating the agent's own faults, which then steers every later session | Failures of the agent or its runtime are classified out of capture before they can become records, and the write gate refuses an agent saving one deliberately. Exclusions are counted in `/memory review`, never silent. See "What the store refuses to record". |
+| A store filling with accurate uselessness - textbook facts, vague advice, session trivia - diluting retrieval | A separate usefulness rubric decides whether a draft deserves a slot at all; see "The second gate: is it worth keeping?" |
 | A bulk delete happening by accident, or without a way back | `/memory delete-all` stages a single-use token that must be typed in a second call, expires in 10 minutes, and writes a container backup before deleting anything. `confirmDestructive: false` cannot lower this floor. |
 | Path traversal out of the store (including through `category`, `id`, `scope.path`) | Every path is produced by `MemoryStore.safeJoin` and verified with `inside()`; `..`, absolute paths, and separators in ids/categories are rejected. `restrictProjectPaths` keeps project-scoped records inside the cwd. |
 | A hostile or careless project steering what gets remembered | While `requireProjectTrustForWrites: true` (default), an untrusted project cannot write at all: `ctx.isProjectTrusted()` is checked on every write path, tool and command alike. |
@@ -90,6 +91,30 @@ start", and "npm ci fails when the lockfile is stale" are real environment knowl
 recordable, while "pi crashed", "compaction error", and "the model runner failed" are not. The refusal
 message points at the durable rule instead - the flag, path, or setting that explains the behaviour -
 because the fact implied by a fault is usually worth keeping even when the fault is not.
+
+| A store filling with accurate uselessness - textbook facts, vague advice, session trivia - diluting retrieval | A separate **usefulness** rubric decides whether a draft deserves a slot at all. Below `minUsefulness` it is discarded with the scoring printed; between the floor and floor+3 it is stored flagged `low-value`, and `/memory audit` retires flagged records that never earn a lookup. |
+
+## The second gate: is it worth keeping?
+
+Refusing junk is not the same as accepting value. A record can be accurate, cited, and useless - a
+textbook definition of a well-known tool, "be careful with the config", a count of errors with no
+cause, a note about a scratch path. Each costs catalog space and dilutes retrieval relevance, which is
+the resource this package exists to protect, so a draft is scored for usefulness (`assessUsefulness`)
+separately from reliability (`qualityScore`):
+
+- **added** for naming something actionable (a flag, path, command, config key, environment variable,
+  or error text), for recording both a mistake and its fix, for evidence that can be re-checked, for
+  stating a contrast or caveat, and for carrying retrieval cues;
+- **subtracted** for hedging, for advice no session can act on, for counting events without a cause,
+  for writing about the conversation itself, for throwaway paths and session ids, for dumping-ground
+  categories, and for defining tools everybody already knows.
+
+Three verdicts rather than a binary: below `minUsefulness` the draft is **discarded** and the writer is
+shown the scoring; between the floor and floor+3 it is stored but flagged `low-value` (visible in
+`/memory ls`); above that it is stored plainly. Auto-captured drafts, which no human reviewed, face the
+floor +1, and `/memory status` counts discards rather than hiding them. The flag is not a dead end:
+`/memory audit` retires a flagged record that has never been looked up, so a borderline call at
+write time gets corrected by later evidence instead of fossilising.
 
 ## Git inside the extension
 

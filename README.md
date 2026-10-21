@@ -343,6 +343,28 @@ without difficulty. The fault report does not; the fact it implies does.
 `/memory review` ends with what was ignored and how much, so this filtering is never silent:
 `ignored as agent or runtime noise (never recorded): model-call x1, runtime x2`.
 
+**Then it has to be worth keeping.** Reliability and usefulness are two separate rubrics, and a draft
+must clear both:
+
+- **reliability** (`minQuality`) asks whether the record is well-formed and verifiable: findable
+  title, condition-specific statement, cues, cited evidence.
+- **usefulness** (`minUsefulness`, default 4) asks whether it will change what a future session does.
+  Points for naming the thing (a flag, path, command, config key, or error text), for recording both a
+  mistake and its fix, for evidence you can re-check, and for retrieval cues. Deductions for hedging,
+  for advice that cannot change behaviour ("be careful", "double check"), for counting events without
+  a cause, for writing about the conversation itself, for throwaway paths and session ids, for
+  dumping-ground categories, and for textbook definitions of well-known tools.
+
+Under the floor the draft is **discarded** and the writer is shown the scoring so it can either fix
+the draft or accept that there was nothing to learn. Just over the floor the record is stored but
+flagged `low-value`, and `/memory audit` retires flagged records that never earn a lookup - so a
+judgement call made at write time is re-checked against evidence later instead of being permanent.
+Auto-captured drafts, which no human reviewed, face the floor +1, and `/memory status` counts how
+many drafts were discarded as not worth keeping.
+
+Set `minUsefulness 0` to turn the gate off. Not recommended: accurate uselessness still costs
+catalog space and retrieval relevance, which is the resource this package exists to protect.
+
 ## On disk
 
 ```
@@ -433,6 +455,7 @@ Precedence, highest wins: **environment** → **`globalMemory` in pi's settings.
 | `privacy` | `strict` | `strict` \| `standard` \| `off` |
 | `sketchy` | `block` | unreliable/low-rank content: `block` \| `flag` \| `off` |
 | `minQuality` | `3` | reliability score 0-10 required to store |
+| `minUsefulness` | `4` | usefulness score 0-10 required to keep a record at all; auto-capture faces the floor +1, and `0` disables the gate |
 | `respectSessionPrivacy` | `true` | `--no-session`/in-memory ⇒ no recording |
 | `requireProjectTrustForWrites` | `true` | untrusted project ⇒ no writes |
 | `toggleShortcut` | `""` | pi keybinding id that flips use+record |

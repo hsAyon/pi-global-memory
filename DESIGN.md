@@ -243,6 +243,37 @@ Two further choices:
 Unresolved failures are not knowledge either, so they stay in the signal ledger for the user to
 accept or ignore; only proven fix pairs are ever written without being asked.
 
+## Decision 15 - two rubrics at the door: reliable, and worth keeping
+
+Evidence rules and self-healing protect against *wrong* records. They say nothing about records that
+are correct and pointless - a textbook definition, "be careful with the config", a count of errors
+with no cause. Those are the slow failure mode of a memory store: every entry takes a catalog line and
+dilutes retrieval, which is the resource the package exists to conserve.
+
+| Option | Assessment |
+| --- | --- |
+| One combined score for quality and usefulness | Rejected: the two questions have different fixes. A thin-but-true record is repaired by naming the flag or path involved; a vague one should not be repaired at all. A single number makes the refusal unactionable. |
+| Ask the model to rate its own draft | Rejected: the model that just wrote the record is the least sceptical reviewer available, self-ratings drift optimistic, and the result is not reproducible across runs. |
+| **A transparent heuristic rubric, scored reasons, three verdicts** (chosen) | Concreteness, cost paid, re-checkable evidence, and retrieval cues add points; hedging, unactionable advice, event counts without causes, conversation-about-the-conversation, throwaway paths, dumping-ground categories, and textbook definitions subtract. Reasons are printed so a refusal teaches the writer what would make it worth keeping. |
+
+Three verdicts rather than a gate: under the floor the draft is **discarded**; between the floor and
+floor+3 it is stored **flagged** `low-value`; above that it is stored plainly. Flagging exists because
+a write-time judgement is a guess: `/memory audit` then retires flagged records that never earn a
+lookup, so evidence decides later instead of the guess fossilising. Auto-captured drafts face the floor
++1 - nobody reviewed them - and discards are counted in `/memory status` so the filtering stays
+visible.
+
+Unlike the fault-report floor, this one is a setting (`minUsefulness`, default 4; 0 disables). That
+asymmetry is deliberate: faults in the agent are never knowledge, but the right threshold depends on
+how big a store you want and how specialised your work is.
+
+Honest limits: the rubric is a heuristic, not an oracle. It cannot tell a deep domain fact from a
+textbook one, so it keys on signals of *cost paid* (an error text quoted, a mistake and its fix, a
+contrast stated) rather than on familiarity. Two probe cases initially scored too high ("npm install
+installs dependencies from package.json"), which is why "states no cost, contrast, or caveat" and
+"reads like a dictionary definition" are separate deductions - a rubric needs adversarial examples
+before it is wired, not after.
+
 ## Known trade-offs
 
 - The catalog is a ranked *sample*, not the whole store: past `maxIndexEntries` the agent must search. Making the sample bigger costs context on every turn for every user; the pointer line keeps the cost of being wrong at one extra tool call.
