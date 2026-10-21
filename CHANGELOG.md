@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.4.0 - 2026-10-22
+
+
+Recording policy made explicit: only knowledge is recorded, and the package is labelled
+experimental.
+
+
+### Added
+
+
+- **Capture classification** (`lib/capture.ts`): errored tool calls are sorted before they can
+  become candidates or signals. Never recorded, with the reason counted in `/memory review`:
+  a call with no usable argument, a failure with no detail, aborts, harness phrasing
+  (`Tool "x" not found`, `Tool "x" failed`), model-call rejections (`Invalid arguments for tool ...`,
+  schema and JSON errors), runtime faults (compaction notices, context overflow, rate limits), and an
+  `edit` whose `oldText` did not match. A dropped failure cannot pair with a later success either, so
+  a provider hiccup followed by a re-run no longer looks like a proven fix.
+- **A write-path floor** (`lib/trust.ts`, applied in `normalizeDraft`): a draft that pairs an
+  agent-runtime subject (pi, the model, the harness, the runtime, compaction, a tool call) with a
+  failure predicate is refused on add and on update. Relaxing `privacy`, `sketchy`, or `minQuality`
+  does not re-admit it. Whole-word subject matching keeps facts about your own infrastructure
+  recordable ("the ssh session times out", "the systemd service fails to start", "npm ci fails when
+  the lockfile is stale"); the refusal message says to store the flag, path, or setting that explains
+  the behaviour instead.
+- `README.md` marks the package **experimental** in terms of what it can do to you (system-prompt
+  sections, model-facing tools, a store outside the repository, automatic writes at run end), that it
+  is verified against pi 1.3.0 only, and that the store should be treated as disposable across
+  upgrades: export first, import after.
+- New section in README, a threat-model row and section in SECURITY, Design Decision 14, and the
+  exact failure strings pi 1.3.0 emits in `docs/NOTES.md` with their source, so the marker list has a
+  provenance.
+- `test/recording-policy.test.ts` (10 tests): both layers, the discrimination list, and a check that a
+  real environment failure with a real fix is still captured and still writable.
+
+
+### Changed
+
+
+- `autoCapture` now describes what the mode actually does (proven fix pairs only, at confidence 1,
+  marked `auto`; unresolved failures stay as signals for `/memory review`) and states that
+  agent/runtime faults are excluded whatever it is set to.
+
+
+### Notes
+
+
+- `STORE_FORMAT` and `CONTAINER_FORMAT` stay at 1: nothing about the bytes changed. Records already in
+  a store are not retroactively filtered - if an older store captured noise, `/memory ls` and
+  `/memory audit` will show it and `/memory retire` is the fix.
+
 ## 0.3.0 - 2026-10-22
 
 

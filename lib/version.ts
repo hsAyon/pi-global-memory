@@ -14,7 +14,7 @@
  * each container so an old file is recognised rather than misread.
  */
 
-export const EXTENSION_VERSION = "0.3.0";
+export const EXTENSION_VERSION = "0.4.0";
 
 /** Bump when the record front-matter or index layout changes incompatibly. */
 export const STORE_FORMAT = 1;
