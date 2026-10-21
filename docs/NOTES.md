@@ -4,6 +4,19 @@ Working notes for this extension. Every claim about pi is pinned to a file in th
 installed release, so later edits do not have to re-derive it (and so a future
 reader can tell a verified fact from a guess).
 
+## Authorship and provenance
+
+- Written by the pi coding agent in-session using **Qwen 3.8 Flash Next GSQ RCO
+  IQ3_S** on the **Strata** engine, at the direction of **hsAyon**.
+- pi reports the active model id as `Qwen3.8-Flash-Next-IQ3_S-extreme` — that id is
+  the owner's local **alias** for one runtime configuration of the same model (see
+  `~/.pi/agent/models.json`, provider `local`: `-Q2_0`, `-IQ3_S`,
+  `-IQ3_S-extreme`), not part of the model's name. `~/.pi/agent/auth.json` lists the
+  `strata` and `llama.cpp` providers. Recorded so the alias is never mistaken for
+  the model name.
+- No third-party code reused; prior art reviewed, not copied (see README
+  Attribution).
+
 ## Environment observed while building
 
 | Fact | Evidence |
@@ -12,7 +25,7 @@ reader can tell a verified fact from a guess).
 | Local install root | `~/.pi/agent/install/releases/1.3.0/node_modules/@earendil-works/pi-coding-agent` |
 | Local Node | `node --version` -> `v24.18.0` |
 | ketch available locally | `which ketch` -> `/d/ketch/ketch`, `ketch --version` -> `ketch v0.19.0` |
-| OS shell is git-bash on Windows; cwd uses `D:/...` | observed in this repo |
+| Built in a git-bash shell on Windows; the code makes no path assumptions for that (see "Packaging and version facts": shipped code is checked for absolute machine paths) |
 
 ## pi extension API facts used by this extension
 
@@ -110,6 +123,69 @@ Cited paths are inside the pi package (`node_modules/@earendil-works/pi-coding-a
   No dependency, no key, no silent upload.
 - **Retirement is soft.** `retire`/`supersede` move files to `archive/`;
   hard delete is command-only and confirmation-gated.
+
+## Git containment: the exact controls (0.2.0)
+
+
+The extension only uses git to version its own records, and only when `gitAutoCommit` is on. Controls
+in `lib/store.ts`, each asserted by `test/offline.test.ts` and `test/git.test.ts`:
+
+
+| Control | Why |
+| --- | --- |
+| `--git-dir <store>/.git --work-tree <store>` + `GIT_DIR`/`GIT_WORK_TREE` | defeats git's upward repository discovery; a store inside your project or home repo is never committed to by it |
+| `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` -> an empty file in the store | absence would still resolve to the user's global config, so aliases, credential helpers, proxies and `fsmonitor` stay unreachable |
+| `core.hooksPath=<store>/.git/hooks-disabled` | hooks are code execution; they must not run |
+| `core.fsmonitor=false`, `commit.gpgsign=false`, `gc.auto=0`, `core.pager=cat` | no watcher, no signing prompt, no maintenance, no pager hang |
+| `GIT_ALLOW_PROTOCOL=none` + `-c protocol.ext.allow=never` | no remote transport, no external helper |
+| `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo`, `GIT_SSH_COMMAND` that exits non-zero | credential/ssh attempts fail closed instead of prompting or popping a dialog |
+| subcommand allow-list `rev-parse, init, add, commit, status, log, config, ls-files` | checked before spawn; `push`/`fetch`/`pull`/`clone`/`reset`/`clean`/`filter-branch` are unreachable |
+| identity via `-c user.name/user.email` in the **pre-subcommand** position | git only accepts `-c` before the subcommand; putting them after `commit` makes the commit fail with no identity (this was a real bug, caught by `test/git.test.ts`) |
+
+
+Store ignore posture lives in `MemoryStore.ignoreWanted()` (one place). With versioning on, `out/`,
+`backups/`, `pending/`, `*.gmect`, `.lock`, `.git-empty-config` stay untracked; with it off the store
+ignores everything, so an accidental `git add .` in a parent repo cannot capture knowledge.
+
+
+## Container format facts (0.2.0)
+
+
+- `GMEM1` + JSON header + base64 body; body = `GM1` + flags + [salt(16)+iv(12)] + payload|ciphertext + [tag(16)].
+- payload = canonical JSON (sorted keys) so identical stores hash identically; digest is SHA-256.
+- encryption: scrypt(N=2^14, r=8, p=1, maxmem=64 MiB) -> AES-256-GCM, header bytes as AAD, fresh salt
+  and IV per export. Reusing a GCM nonce under one key is a confidentiality failure, so it is tested.
+- caps: `maxOutputLength` on inflate, record count caps, container text cap. Import always re-runs the
+  write gates; export re-scans and skips secret-shaped or personal records unless `allowprivate`.
+
+
+## Packaging and version facts (0.2.0)
+
+
+- `lib/version.ts` is the single source: `EXTENSION_VERSION`, `STORE_FORMAT` (declared in `index.json`),
+  `CONTAINER_FORMAT` (stamped in every container), `VERIFIED_PI_VERSION`.
+- `package.json` `files` = `index.ts`, `lib/`, `README.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`,
+  `package.json`. `test/version.test.ts` walks the import graph from `pi.extensions[0]` and fails if a
+  runtime file is unpublished, if `test/`, `scripts/`, or `docs/` is reachable, or if version/changelog
+  disagree. It also rejects absolute machine paths in shipped code.
+- Inside pi, `typebox` and pi itself come from pi's jiti aliases (`dist/core/extensions/loader.js:
+  getAliases`), so nothing is bundled; the local `node_modules/typebox` copy exists only for standalone
+  `node --test` runs.
+
+
+## Tooling lesson: never build source text with escapes through a shell heredoc
+
+
+Twice in this session a generated file ended up with a literal newline where the source needed the
+two-character escape (e.g. `].join(` + quote + newline + quote + `)`), because the `backslash-n` was
+interpreted on the way in rather than preserved. It parses as a syntax error only when the module is
+imported, which is easy to miss. Working rules that hold: build generated strings with
+`String.fromCharCode(10)` / `String.fromCharCode(92) + "n"` instead of `
+` inside heredocs; run the
+import smoke (`test/imports.test.ts`) immediately after generating source; and prefer the `edit` tool
+with short exact anchors over whole-file rewrites, because a bad anchor can delete a region — a
+`git checkout HEAD -- <file>` recovery was needed once, which is also why work is committed in small
+steps.
 
 ## Prior art found while researching (for attribution)
 

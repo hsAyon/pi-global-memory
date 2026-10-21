@@ -147,6 +147,68 @@ Nothing under `lib/` imports pi except `lib/schemas.ts` (typebox) and the type-o
 
 `npm run verify` runs the suite and the load check. The load check exists because a mock API can drift from pi's; it uses `discoverAndLoadExtensions` from the installed pi package, starts no agent loop, and performs no network I/O.
 
+## Decision 9 - versioning records with git, contained rather than not at all
+
+Records are plain files, so history is worth having: it is how a wrong record from last month can be
+found, compared, and restored. The question was whether the extension should drive git at all.
+
+| Option | Assessment |
+| --- | --- |
+| Never touch git; tell the user to do it | Simplest and zero attack surface, but then "git-friendly" means every user re-implements ignore scoping, commit messages, and a repository boundary for a directory they should not have to think about. |
+| Operate on whatever repository contains the store | Rejected: the store often lives inside `~/.pi`, which people do version. Committing a knowledge store into a user's project or home repository, and picking up their hooks and credential helpers, is exactly the surprise this package should not cause. |
+| **Its own repository, contained** (chosen, opt-in via `gitAutoCommit`) | `--git-dir`/`--work-tree` + `GIT_DIR`/`GIT_WORK_TREE` defeat upward discovery; `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` point at an empty file so global config cannot inject aliases, helpers, proxies, or `fsmonitor`; `core.hooksPath` disables hooks (code execution); `GIT_ALLOW_PROTOCOL=none` plus fail-closed ssh/askpass makes remotes impossible; a subcommand allow-list is checked before spawn. `test/git.test.ts` proves the parent repository gains nothing. |
+
+Two rules fall out of that choice: the git code path is only entered when the user opts in, and
+sensitive side-files (`out/`, `backups/`, `pending/`, containers, locks) are never versioned even
+then - versioning records must not become versioning copies of everything.
+
+## Decision 10 - the container: compressed and honest about what it authenticates
+
+`/memory export` leaves the machine, so it gets a format rather than a JSON dump:
+
+- **deflate + SHA-256 always.** Small enough to commit or mail; truncation and accidental edits are
+  detected. Stated plainly in the docs: without a passphrase this detects *corruption*, not *forgery*,
+  because an attacker who can rewrite the file can rewrite the digest.
+- **AES-256-GCM + scrypt when a passphrase is given.** This is the only authenticated mode: the
+  header is additional authenticated data, so tampering with `recordCount` or the timestamp fails the
+  tag. Salt and IV are fresh per export (reusing a GCM nonce under one key is a confidentiality
+  failure), and the scrypt parameters are modest on purpose - the threat is a stolen personal notes
+  file, not a nation state.
+- **Caps everywhere.** Decompression is bounded (`maxOutputLength`), as are record counts and file
+  text, because a compressed file is the classic way to turn 4 KB downloaded into gigabytes of RAM.
+- **Canonical payload JSON** (sorted keys) so the same store hashes identically, making backups
+  comparable and diffs meaningful.
+- **Import is not a bypass.** Every imported record re-passes the write gates; export re-scans and
+  holds back secret-shaped or personal content unless `allowprivate` is explicit.
+
+## Decision 11 - destructive actions get floors, not just settings
+
+`confirmDestructive` exists for convenience, so a floor that ignores it was necessary: `delete-all`
+splits into a staging call (explains scope, issues a single-use 10-minute token) and a confirming call
+that must present the token - the same two-step works with or without a UI, which matters because
+`/memory` also runs in headless modes. A container backup is written before anything is deleted, so
+even a confirmed bulk delete is reversible from the tool that performed it. Single-record deletion in
+the browser asks twice: a dialog, then typing the record's own id.
+
+## Decision 12 - one registry for configuration
+
+`lib/configspec.ts` holds each key's type, allowed values, range, group, plain-language description,
+what changing it does to the user's data, and whether it is privacy/safety relevant. Validation
+(`lib/config.ts`), `/memory config list|explain`, error text, and the README table all read from it,
+and `test/configux.test.ts` asserts every default key is documented, every enum has values, every
+privacy-relevant key is flagged, and the README mentions each key exactly once. The failure this
+prevents is the quiet one: docs and validation drifting apart, so a user types a value that one of
+them accepts.
+
+## Decision 13 - what ships, and how that is enforced
+
+`package.json` declares `files`, so an install contains `index.ts`, `lib/`, `README.md`,
+`SECURITY.md`, `CHANGELOG.md`, `LICENSE`, and `package.json` - not the test suite, not the load-check
+script, not the development notes. `test/version.test.ts` walks the import graph from the manifest
+entry and asserts every runtime-reachable file is published, nothing development-only is reachable,
+and that `lib/version.ts`, `package.json`, and `CHANGELOG.md` agree on the version. The same test
+refuses absolute machine paths in shipped code, which is what keeps the package portable.
+
 ## Known trade-offs
 
 - The catalog is a ranked *sample*, not the whole store: past `maxIndexEntries` the agent must search. Making the sample bigger costs context on every turn for every user; the pointer line keeps the cost of being wrong at one extra tool call.

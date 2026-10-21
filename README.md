@@ -23,29 +23,38 @@ Status: `0.1.0`, verified against pi **1.3.0** (`npm run check` loads it through
 
 ## Install
 
-From this folder:
+From the folder you cloned this repository into (replace the path with your own):
+
 
 ```bash
-pi install ./D:/AI/proj/pi-global-memory     # writes a declaration to ~/.pi/agent/settings.json
-pi install ./D:/AI/proj/pi-global-memory --local   # project-scoped: .pi/settings.json (loaded after project trust)
+pi install /path/to/pi-global-memory            # writes a declaration to your pi settings
+pi install /path/to/pi-global-memory --local    # project-scoped: .pi/settings.json (loaded after project trust)
 ```
 
+
 Or point pi at it for one run:
+
 
 ```bash
 pi --extension ./index.ts
 ```
 
-Or add it to `~/.pi/agent/settings.json` yourself:
+
+Or add it to your pi settings yourself:
+
 
 ```json
 {
-  "extensions": ["D:/AI/proj/pi-global-memory"],
+  "extensions": ["/path/to/pi-global-memory"],
   "globalMemory": { "gitAutoCommit": true }
 }
 ```
 
-Pi supplies the host packages this extension imports (`@earendil-works/pi-coding-agent`, `typebox`) - they are declared as `peerDependencies` and must not be bundled; inside pi they are resolved by pi's own module aliases, so no install step is needed to use the package.
+
+Pi supplies the host packages this extension imports (`@earendil-works/pi-coding-agent`,
+`typebox`): they are declared as `peerDependencies`, must not be bundled, and inside pi
+they are resolved by pi's own module aliases - so using the package needs no install step.
+Only `npm install` (typebox as a devDependency) is needed to run the tests standalone.
 
 Then start pi and run:
 
@@ -86,7 +95,18 @@ Closed vocabularies are TypeBox literal unions, so pi rejects a hallucinated act
 /memory record on|off          write side only (model saves, auto-capture, command writes)
 /memory pause                  recording off for the rest of this session
 /memory toggle                 flip the current posture
+/memory overview               per-category counts, disputed and never-verified totals
+/memory ls [category] [sort=value|updated|created|hits|confidence|age] [retired]
+                               one line per record: id, confidence, hits, age, warnings
+/memory browse [category]      interactive: pick a record, then verify / retire / restore / delete
 /memory search <keywords> | catalog [limit] | read <id>... | audit
+/memory verify <id> [note] | retire <id>... | restore <id>... | merge <keep> <drop>...
+/memory delete <id>... force   one record, permanently
+/memory delete-all             EVERY record: two confirmations + a typed token, always backed up
+/memory review | accept [n] | prune | doctor | selftest | reindex
+/memory export [file] [all] [category=<slug>] [enc] [note=<text>] [allowprivate]
+/memory import <file> [passphrase=<text>]
+/memory config list | explain <key> | get <key> | set <key> <value> | where
 /memory review | accept [n]    failed calls seen this session, and their proven fixes
 /memory verify <id> [note]     you re-tested it: clears a dispute, can raise confidence
 /memory retire <id>... | restore <id>... | merge <keep> <drop>...
@@ -143,6 +163,107 @@ Disputes and confirmations are queued during the run and flushed once at `agent_
 Details and scoring: [DESIGN.md](DESIGN.md).
 
 ---
+
+## Viewing, deleting, and moving records
+
+
+**See the store at a level above the individual record.** `/memory overview` prints one row per
+category (live, retired, disputed, never-verified). `/memory ls [category] [sort=…]` prints one
+line per record - id, confidence, hits, age in days, and warnings such as `DISPUTED` or
+`tentative` - written to a file under the store so a 400-record store never floods the terminal or
+the context window. `/memory browse [category]` is the interactive version: category, then record,
+then an action (show, verify, retire, restore, delete).
+
+
+**Deleting is deliberately awkward.** One record: `/memory delete <id> force`, or in `browse` a
+confirm dialog *and* typing the record's own id. Everything: `/memory delete-all`, which never runs
+in one step -
+
+
+1. the first call deletes nothing and reports the scope plus a single-use token (expires in 10 minutes),
+2. the second call must present that token: `/memory delete-all confirm 3F9A2C`,
+3. a container backup of the whole store (including retired records) is written **first**, and the
+   message prints the file and the restore command:
+
+
+```
+/memory import <store>/backups/pre-delete-all-2026-10-22T00-00-00-000Z.gmect [passphrase=<text>]
+```
+
+
+`confirmDestructive: false` does **not** bypass this; it is the one floor that setting cannot lower.
+Set `PI_GLOBAL_MEMORY_PASSPHRASE` beforehand if you want that backup encrypted.
+
+
+## Portable copies: the container format
+
+
+`/memory export` writes a `.gmect` container instead of a raw JSON dump:
+
+
+```
+GMEM1
+{"v":1,"kind":"pi-global-memory","exportedAt":"…","recordCount":412,
+ "encoding":"deflate-raw","integrity":"sha256","cipher":"aes-256-gcm"|null,
+ "kdf":"scrypt"|null,"payloadSha256":"…","note":"…"}
+<base64 body, 76-char wrapped>
+```
+
+
+- **Compressed** (deflate) - typically ~10x smaller than the JSON.
+- **Integrity-checked** - the payload's SHA-256 is verified on import, so truncation or a hand edit
+  is reported rather than half-imported.
+- **Optionally encrypted** - `enc` plus a passphrase gives AES-256-GCM with a scrypt-derived key.
+  The header is authenticated data, so editing `recordCount` or the timestamp breaks the tag. A
+  plain container detects *corruption*; only an encrypted one detects *forgery*. Anything leaving
+  the machine should be encrypted.
+- **Bounded** - decompression is capped, record counts are capped, unknown versions and ciphers are
+  refused. A downloaded file cannot make the extension allocate unboundedly.
+- **Gated** - imported records re-pass every write gate (evidence, secrets, privacy, quality), and
+  export skips records that look secret or personal unless you pass `allowprivate` deliberately.
+
+
+Passphrases: `PI_GLOBAL_MEMORY_PASSPHRASE` is read first. Passing `passphrase=…` works but warns,
+because command arguments end up in the pi session transcript.
+
+
+## Versioning: the extension's, and the records'
+
+
+**Package versioning.** `lib/version.ts` is the single source for the extension version and for the
+two on-disk format versions (`STORE_FORMAT` for records/indexes, `CONTAINER_FORMAT` for exported
+files). `index.json` declares the store format; every container stamps its own. `test/version.test.ts`
+fails if `package.json`, `CHANGELOG.md`, and `lib/version.ts` disagree, or if a file that runs at
+runtime is not published, or if anything development-only is reachable from `index.ts`.
+
+
+**What installs clean.** `package.json` declares `files`, so an installed package is exactly
+`index.ts`, `lib/`, `README.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`, and `package.json`.
+Tests, the load-check script, and the development notes in `docs/` are never part of the install and
+are never imported by the extension (pinned by test).
+
+
+**Versioning your records.** `gitAutoCommit: false` (default) leaves the store untracked - the store
+writes its own `.gitignore` that ignores everything. Set it to `true` and the store keeps *its own*
+local history, contained by construction:
+
+
+- every git call names `--git-dir <store>/.git --work-tree <store>` (plus matching `GIT_DIR`/
+  `GIT_WORK_TREE` env), so git's upward repository discovery can never reach your project or home
+  repository - a store nested inside a real repo is never committed to by it (`test/git.test.ts` proves it);
+- `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` point at an empty file inside the store, so your global
+  aliases, credential helpers, proxies, and `fsmonitor` are unreachable; hooks are disabled with
+  `core.hooksPath`; signing and auto-gc are off;
+- offline: `GIT_ALLOW_PROTOCOL=none`, `protocol.ext.allow=never`, credential/ssh helpers fail closed,
+  and subcommands go through an allow-list (`rev-parse`, `init`, `add`, `commit`, `status`, `log`,
+  `config`, `ls-files`) - `push`/`fetch`/`pull`/`clone` are not reachable and the offline test fails
+  the build if they ever appear;
+- with versioning on, `records/`, `archive/`, and the indexes are tracked while `out/`, `backups/`,
+  `pending/`, `*.gmect`, `.lock`, and the isolation config stay untracked.
+
+
+Commits are attributed to `pi-global-memory <memory@localhost>` unless you set an identity inside
+the store repository. Pushing remains your command, from a shell.
 
 ## On disk
 
@@ -209,7 +330,8 @@ Precedence, highest wins: **environment** → **`globalMemory` in pi's settings.
 | `hitsMaxChars` | `900` | hard budget for the hits section |
 | `maxIndexEntries` | `40` | catalog lines in context |
 | `maxHits` | `3` | records per run in the hits section |
-| `searchMaxChars` / `readMaxChars` | `3000` / `4000` | tool output caps |
+| `searchMaxChars` | `3000` | cap on one `memory_lookup` search result |
+| `readMaxChars` | `4000` | cap on one rendered record |
 | `minSearchScore` | `1.2` | below this, "no match" beats a weak suggestion |
 | `readOnly` | `false` | hard no-write mode |
 | `maxWritesPerSession` | `25` | write quota |
@@ -219,7 +341,10 @@ Precedence, highest wins: **environment** → **`globalMemory` in pi's settings.
 | `redactSecrets` | `block` | `block` \| `mask` \| `off` |
 | `autoCapture` | `fixes` | `off` \| `fixes` \| `all`: turn proven fix→working chains into records automatically |
 | `signals` / `maxSignals` | `true` / `300` | failed-call ledger (`pending/signals.jsonl`) |
-| `tentativeTtlDays` / `staleDays` | `60` / `120` | automatic expiry of unverified, ageing records |
+| `tentativeTtlDays` | `60` | days a never-verified tentative record survives before retirement is proposed |
+| `staleDays` | `120` | age after which `/memory audit` flags a record as stale (nothing is deleted for being stale) |
+| `signals` | `true` | keep the local failed-call ledger used by `/memory review` |
+| `maxSignals` | `300` | how many failed-call entries the ledger keeps |
 | `maxActiveRecords` | `400` | soft ceiling; `/memory prune` proposes retirements |
 | `confirmDestructive` | `true` | hard delete, prune, bulk retire ask first |
 | `statusLine` | `true` | show `GM ...` in the footer |
@@ -254,13 +379,20 @@ Inside pi nothing is installed for this package: pi aliases `typebox` and `@eare
 
 Design decisions and alternatives considered: [DESIGN.md](DESIGN.md). Implementation notes with evidence from pi's own docs/types: [docs/NOTES.md](docs/NOTES.md).
 
-## Attribution and prior art
+## Attribution
 
-- Written for this repository from scratch. **No third-party source code is reused** - no dependencies beyond pi's host-provided peer packages (`@earendil-works/pi-coding-agent`, `typebox`).
-- Prior art found during research (via `ketch`), reviewed for ideas and not copied: [`pi-memory-extension`](https://pi.dev/packages/pi-memory-extension) by `appleface2050`, listed on pi.dev. It stores plain notes; this package differs in the budgeted two-section prompt design, evidence-gated records, reliability/privacy gates, and automatic contradiction tracking.
-- pi API usage (extension factory, `before_agent_start` sections, tool/command/flag/shortcut registration, settings schema tolerance) follows pi 1.3.0's own documentation and type declarations; citations are in [docs/NOTES.md](docs/NOTES.md).
-- Conceptual ancestry worth naming: memory-bank / note-based agent memory as popularised by Cline's memory-bank, and retrieval-over-embeddings argumentation common in RAG writing. No code taken.
+Written by an AI coding agent, at the direction of the repo owner, who asked to be
+credited accordingly:
+
+- **Author:** pi coding agent using **Qwen 3.8 Flash Next GSQ RCO IQ3_S** on the **Strata** engine.
+- **Direction and requirements:** **hsAyon** (repo owner) - the brief (local, offline, git-friendly global memory; private by default; accuracy first), the clarification that "low rank knowledge" means *unreliable* knowledge, and the destructive-action and compressed-export requirements.
+- **No third-party code is reused.** Imports are Node built-ins (`node:fs`, `node:path`, `node:os`, `node:crypto`, `node:zlib`, `node:child_process` for local git only) plus pi's host-provided peer packages `@earendil-works/pi-coding-agent` and `typebox`.
+- **Prior art, reviewed for ideas and not copied:** [`pi-memory-extension`](https://pi.dev/packages/pi-memory-extension) by `appleface2050` (Markdown notes loaded into context), and pi's own `examples/extensions/claude-rules.ts` (MIT, shipped with pi 1.3.0), which demonstrates the "list files in the prompt, let the agent read them" pattern generalised here with scoring and budgets. Details and pi API citations: [docs/NOTES.md](docs/NOTES.md).
+
+Anything copied or adapted from a third party must be recorded here and in
+[docs/NOTES.md](docs/NOTES.md) with URL and license, keeping the upstream
+copyright header intact.
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE). Copyright (c) 2026 hsAyon.
