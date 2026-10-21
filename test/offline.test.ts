@@ -32,6 +32,10 @@ const FORBIDDEN: { name: string; re: RegExp }[] = [
 ];
 
 /** Only this one file may spawn a process at all, and only for contained git. */
+// node:crypto is allowed only where it has an audited job; node:zlib only in the container codec.
+const CRYPTO_USERS = new Set(["lib/container.ts", "lib/util.ts"]);
+const ZLIB_USERS = new Set(["lib/container.ts"]);
+
 const PROCESS_USERS = new Set(["lib/util.ts"]);
 /** The confinement rules are asserted here so a removed control fails a test. */
 const GIT_CONTAINMENT = [
@@ -67,6 +71,14 @@ test("no network APIs are referenced anywhere in the extension", () => {
 		}
 	}
 	if (findings.length > 0) throw new Error(`offline invariant violated:\n  ${findings.join("\n  ")}`);
+});
+
+test("node:crypto and node:zlib appear only in audited places", () => {
+	for (const rel of SOURCES) {
+		const text = fs.readFileSync(path.join(ROOT, rel), "utf8");
+		if (/node:crypto/.test(text) && !CRYPTO_USERS.has(rel)) t.fail(`${rel}: uses node:crypto outside the container codec and the token helper`);
+		if (/node:zlib/.test(text) && !ZLIB_USERS.has(rel)) t.fail(`${rel}: uses node:zlib outside the container codec`);
+	}
 });
 
 test("child_process is only used for git, with argv form and no shell", () => {

@@ -111,14 +111,28 @@ describe("container: export/import format", () => {
 		assert.throws(() => unpackContainer(tampered, "a passphrase that is long"), (err: unknown) => err instanceof ContainerError);
 	});
 
-	test("a flipped byte in a plain container is caught by the digest", () => {
+	test("a header digest that disagrees with the payload is reported as tampering", () => {
+		const text = packRecords(RECORDS);
+		// the digest lives in the header; changing one hex digit makes it disagree with the payload
+		const fixed = text.replace(/"payloadSha256":\s*"([0-9a-f])([0-9a-f])/, (_m, a, b) => `"payloadSha256": "${a === "0" ? "1" : "0"}${b}`);
+		assert.notEqual(fixed, text, "the header must carry a payloadSha256 field");
+		assert.throws(() => unpackContainer(fixed), (err: unknown) => (err as ContainerError).code === "tamper");
+	});
+
+	test("a flipped payload byte never imports silently", () => {
 		const text = packRecords(RECORDS);
 		const body = bodyOf(text);
-		body[body.length - 5] ^= 0xff;
+		body[Math.floor(body.length / 3)] ^= 0xff; // inside the compressed payload
 		const lines = text.split(/\r?\n/);
 		const b64 = body.toString("base64").match(/.{1,76}/g) ?? [];
 		const fixed = [lines[0], lines[1], ...b64].join("\n");
-		assert.throws(() => unpackContainer(fixed), (err: unknown) => (err as ContainerError).code === "tamper");
+		assert.throws(
+			() => {
+				const out = unpackContainer(fixed);
+				return out.records.length;
+			},
+			(err: unknown) => ["tamper", "damaged", "format"].includes((err as ContainerError).code),
+		);
 	});
 
 	test("a truncated file is reported as damaged, not imported short", () => {

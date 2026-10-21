@@ -230,7 +230,11 @@ export function unpackContainer(text: string, passphrase?: string): UnpackResult
 	}
 
 	const digest = sha256(payload);
-	if (digest !== header.payloadSha256) {
+	// Constant-time comparison, as for any integrity tag: cheap, and it keeps the check honest.
+	const expected = Buffer.from(header.payloadSha256, "hex");
+	const actual = Buffer.from(digest, "hex");
+	const same = expected.length === actual.length && timingSafeEqual(expected as never, actual as never);
+	if (!same) {
 		throw new ContainerError(authenticated ? "tamper" : "tamper", `payload digest mismatch: the records changed since export (expected ${header.payloadSha256.slice(0, 12)}…, got ${digest.slice(0, 12)}…)`);
 	}
 
